@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+from typing import Any, TypedDict
+
+from langgraph.graph import END, START, StateGraph
+
+from .agents import advisor, analyzer, categorizer, forecaster, simulator, verifier
+from .trace import trace as default_trace
+
+
+class State(TypedDict, total=False):
+    run_id: str
+    profile: str
+    request: dict
+    df: Any
+    opening: float
+    corrections: dict
+    goals: list
+    findings: list
+    overview: str
+    forecast: dict
+    model: Any
+    balance: float
+    recs: list
+    dropped: list
+    answer: dict
+
+
+def route(state):
+    return state["request"]["type"]
+
+
+def _public(fc):
+    return {k: v for k, v in fc.items() if k != "model"}
+
+
+def build_graph(llm=None, tr=default_trace, persist=None):
+    def emit(state, agent, kind, summary, data=None):
+        tr.emit(state["run_id"], agent, kind, summary, data)
+
+    def n_categorize(state):
+        emit(state, "categorizer", "start", f"labeling {len(state['df'])} transactions")
+        df = categorizer.categorize_df(state["df"], llm, state.get("corrections"))
+        src = df["category_source"].value_counts().to_dict()
+        emit(state, "categorizer", "result",
+             f"{src.get('rule', 0)} by rule, {src.get('llm', 0)} by LLM, "
+             f"{src.get('user', 0)} by your corrections, {src.get('none', 0)} uncategorized", src)
+        return {"df": df}
+
+    def n_analyze(state):
+        emit(state, "analyzer", "tool", "running anomaly, subscription and behavior engines")
+        out = analyzer.run(state["df"], llm)
+        emit(state, "analyzer", "result", out["overview"], {"n": len(out["findings"])})
+        return {"findings": out["findings"], "overview": out["overview"]}
+
+    def n_forecast(state):
+        emit(state, "forecaster", "tool", "fitting model and running 1,000 Monte Carlo paths")
+        fc = forecaster.run(state["df"], state["opening"], state.get("goals") or [], llm)
+        emit(state, "forecaster", "result", fc["narrative"], fc["summary"])
+        return {"forecast": _public(fc), "model": fc["model"], "balance": fc["balance"]}
+
+    def n_advise(state):
+        cands = advisor.build_candidates(state["findings"], state["df"], state["forecast"],
+                                         state["forecast"]["goals"])
+        emit(state, "advisor", "tool", f"{len(cands)} candidate actions from findings and forecast")
+        recs = advisor.advise(cands, llm, getattr(llm, "model", "") if llm else "")
+        emit(state, "advisor", "result", f"drafted {len(recs)} recommendations")
+        return {"recs": recs}
+
+    def n_verify(state):
+        emit(state, "verifier", "start", "recomputing every cited number from raw transactions")
+        kept, dropped = verifier.verify_all(
+            state["recs"], state["df"], llm,
+            emit=lambda kind, summary, data=None: emit(state, "verifier", kind, summary, data))
+        emit(state, "verifier", "result", f"{len(kept)} verified, {len(dropped)} dropped")
+        return {"recs": kept, "dropped": dropped}
+
+    def n_persist(state):
+        if persist:
+            persist(state)
+        emit(state, "coordinator", "result", "saved results")
+        return {}
+
+    def n_prepare(state):
+        if state.get("model") is None:
+            fc = forecaster.run(state["df"], state["opening"], state.get("goals") or [], None)
+            return {"model": fc["model"], "balance": fc["balance"], "forecast": _public(fc)}
+        return {}
+
+    def n_afford(state):
+        emit(state, "simulator", "tool", "simulating the purchase against 1,000 futures")
+        # ValueError (date outside forecast window) intentionally propagates
+        ans = simulator.afford(state["model"], state["balance"], state["request"], llm)
+        emit(state, "simulator", "result", ans["narrative"])
+        return {"answer": ans}
+
+    def n_duel(state):
+        emit(state, "simulator", "tool", "running both options on identical random futures")
+        ans = simulator.run_duel(state["model"], state["balance"], state["request"], llm)
+        emit(state, "simulator", "result", ans["reason"])
+        return {"answer": ans}
+
+    def n_chat(state):
+        from .agents import chat  # built in Task 11; ImportError until then
+        emit(state, "chat", "tool", "answering from your data")
+        ans = chat.answer(state["request"]["question"], state["df"], state["model"], state["balance"],
+                          state.get("goals") or [], llm)
+        emit(state, "chat", "result", ans["text"])
+        return {"answer": ans}
+
+    g = StateGraph(State)
+    for name, fn in [("categorize", n_categorize), ("analyze", n_analyze), ("forecast", n_forecast),
+                     ("advise", n_advise), ("verify", n_verify), ("persist", n_persist),
+                     ("prepare", n_prepare), ("afford", n_afford), ("duel", n_duel), ("chat", n_chat)]:
+        g.add_node(name, fn)
+    g.add_conditional_edges(START, route, {"pipeline": "categorize", "afford": "prepare",
+                                           "duel": "prepare", "chat": "prepare"})
+    g.add_conditional_edges("prepare", route, {"afford": "afford", "duel": "duel", "chat": "chat"})
+    for a, b in [("categorize", "analyze"), ("analyze", "forecast"), ("forecast", "advise"),
+                 ("advise", "verify"), ("verify", "persist"), ("persist", END),
+                 ("afford", END), ("duel", END), ("chat", END)]:
+        g.add_edge(a, b)
+    return g.compile()

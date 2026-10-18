@@ -7,6 +7,10 @@ from openai import OpenAI
 from . import config
 
 
+TIMEOUT = 20  # seconds per request
+ATTEMPTS = 2  # one try plus one retry
+
+
 class LLMUnavailable(Exception):
     pass
 
@@ -24,12 +28,13 @@ class LLM:
             key = os.getenv("MESH_API_KEY")
             if not key:
                 raise LLMUnavailable("MESH_API_KEY not set")
-            self._client = OpenAI(base_url=config.MESH_BASE_URL, api_key=key)
+            # our own loop below does the one retry; the SDK must not add retries or a 600 s timeout
+            self._client = OpenAI(base_url=config.MESH_BASE_URL, api_key=key, timeout=TIMEOUT, max_retries=0)
         return self._client
 
     def complete(self, system, user, json_mode=False):
         last = None
-        for _ in range(2):
+        for attempt in range(ATTEMPTS):
             try:
                 kw = {"response_format": {"type": "json_object"}} if json_mode else {}
                 r = self.client.chat.completions.create(
@@ -41,7 +46,8 @@ class LLM:
                 raise
             except Exception as e:  # network, rate limit, bad model
                 last = e
-                time.sleep(1)
+                if attempt < ATTEMPTS - 1:  # no sleep after the final failed attempt
+                    time.sleep(1)
         raise LLMUnavailable(str(last))
 
     def json(self, system, user):

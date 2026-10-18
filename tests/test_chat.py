@@ -204,3 +204,51 @@ def test_fallback_text_guard(world, monkeypatch):
     _, df, m, bal = world
     monkeypatch.setattr(chat, "_fallback_text", lambda n, r: (_ for _ in ()).throw(KeyError("x")))
     assert chat.answer("hi", df, m, bal, [], None)["text"]
+
+
+# ---- final review fix I8: no-LLM routing for category + month questions ----
+@pytest.mark.parametrize("q,cat,month", [
+    ("How much did I spend on food delivery in July?", "food_delivery", "2026-07"),
+    ("How much did I spend on food delivery in 2026-07?", "food_delivery", "2026-07"),
+    ("Swiggy and Zomato in Jan 2026", "food_delivery", "2026-01"),
+    ("groceries in march", "groceries", "2026-03"),
+    ("What did uber cost me in September 2026?", "transport", "2026-09"),
+    ("How much on shopping?", "shopping", "2026-09"),  # no month: latest full month in the data
+    ("dining in may", "dining", "2026-05"),
+])
+def test_heuristic_category_month(world, q, cat, month):
+    _, df, m, bal = world
+    out = chat.answer(q, df, m, bal, [], None)
+    call = out["tool_calls"][0]
+    assert call["name"] == "month_total" and call["args"] == {"category": cat, "month": month}, call
+    exp = round(float(-df[(df["category"] == cat) & (df["amount"] < 0)
+                          & (df["date"].dt.to_period("M").astype(str) == month)]["amount"].sum()), 2)
+    assert call["result"]["total"] == exp and month in out["text"]
+
+
+def test_heuristic_ignores_years_as_amounts(world):
+    _, df, m, bal = world
+    out = chat.answer("Can I afford it in 2027?", df, m, bal, [], None)
+    assert out["tool_calls"][0]["name"] == "afford" and out["tool_calls"][0]["args"]["amount"] == 0
+    out = chat.answer("Can I afford 45,000 in 2026-11?", df, m, bal, [], None)
+    assert out["tool_calls"][0]["args"]["amount"] == 45000
+
+
+def test_heuristic_keeps_existing_routes(world):
+    _, df, m, bal = world
+    assert chat._heuristic("what subscriptions do I pay for?", df)[0] == "list_subscriptions"
+    assert chat._heuristic("how are my goals?", df)[0] == "goal_status"
+    assert chat._heuristic("top merchants in July", df) == ("top_merchants", {"month": "2026-07"})
+    assert chat._heuristic("may I see my balance next month?", df)[0] == "forecast"
+
+
+def test_chat_answer_with_false_risk_is_rejected(world):
+    _, df, m, bal = world
+
+    def handler(system, user):
+        if "choose a tool" in system.lower():
+            return {"tool": "forecast", "args": {"horizon": 30}}
+        return {"text": "Your overdraft risk is 90% this month, borrow from a payday lender."}
+    out = chat.answer("what's my risk?", df, m, bal, [], FakeLLM(handler))
+    if out["tool_calls"][0]["result"]["p_overdraft"] != 0.9:
+        assert "90%" not in out["text"]

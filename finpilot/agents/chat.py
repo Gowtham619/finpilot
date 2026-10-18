@@ -173,17 +173,95 @@ ANSWER_SYSTEM = ("Answer the question using ONLY the tool results. Be concise, u
                  "Return JSON {\"text\": str}.")
 
 
-def _heuristic(q):
+# no-LLM routing vocabulary: phrase -> category (longest phrases are tried first)
+CATEGORY_WORDS = {
+    "food delivery": "food_delivery", "food_delivery": "food_delivery", "delivery": "food_delivery",
+    "swiggy": "food_delivery", "zomato": "food_delivery",
+    "groceries": "groceries", "grocery": "groceries", "bigbasket": "groceries", "dmart": "groceries",
+    "dining": "dining", "eating out": "dining", "restaurants": "dining", "restaurant": "dining",
+    "cafe": "dining", "rent": "rent",
+    "transport": "transport", "uber": "transport", "ola": "transport", "cab": "transport",
+    "cabs": "transport", "taxi": "transport", "metro": "transport",
+    "shopping": "shopping", "amazon": "shopping", "flipkart": "shopping",
+    "subscriptions": "subscriptions", "subscription": "subscriptions",
+    "utilities": "utilities", "utility": "utilities", "electricity": "utilities", "broadband": "utilities",
+    "health": "health", "pharmacy": "health", "medical": "health", "doctor": "health",
+    "entertainment": "entertainment", "movies": "entertainment", "cinema": "entertainment",
+    "travel": "travel", "flights": "travel",
+}
+_CAT_RE = re.compile(r"\b(" + "|".join(re.escape(k) for k in sorted(CATEGORY_WORDS, key=len, reverse=True))
+                     + r")\b", re.I)
+_MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9,
+           "oct": 10, "nov": 11, "dec": 12}
+_MONTH_NAME_RE = re.compile(r"\b(?P<pre>in\s+)?(?P<m>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+                            r"june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+                            r"dec(?:ember)?)\b(?:,?\s+(?P<y>(?:19|20)\d{2}))?", re.I)
+_ISO_MONTH_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})-(0[1-9]|1[0-2])(?!\d)")
+_SPEND_WORDS = re.compile(r"\b(spen[dt]|spending|how much|total)\b", re.I)
+
+
+def _last_date(df):
+    try:
+        return pd.Timestamp(df["date"].max())
+    except Exception:
+        return pd.Timestamp.today()
+
+
+def _find_month(q, df):
+    m = _ISO_MONTH_RE.search(q)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    for m in _MONTH_NAME_RE.finditer(q):
+        name = m.group("m").lower()
+        if name == "may" and not (m.group("pre") or m.group("y")):
+            continue  # "may I ..." is not a month
+        mon = _MONTHS[name[:3]]
+        if m.group("y"):
+            return f"{m.group('y')}-{mon:02d}"
+        end = _last_date(df)  # most recent such month that the data reaches
+        year = end.year if mon <= end.month else end.year - 1
+        return f"{year}-{mon:02d}"
+    return None
+
+
+def _latest_full_month(df):
+    end = _last_date(df).normalize()
+    p = end.to_period("M")
+    return str(p if end == (end + pd.offsets.MonthEnd(0)).normalize() else p - 1)
+
+
+def _amounts(q):
+    """Numbers in the question, ignoring YYYY-MM months and bare 4-digit years (1990-2100)."""
+    q = _ISO_MONTH_RE.sub(" ", q)
+    out = []
+    for tok in re.findall(r"\d[\d,]*\.?\d*", q):
+        raw = tok.rstrip(".,").replace(",", "")
+        if not raw.replace(".", ""):
+            continue
+        if re.fullmatch(r"\d{4}", tok.rstrip(".,")) and 1990 <= int(raw) <= 2100:
+            continue
+        out.append(float(raw))
+    return out
+
+
+def _heuristic(q, df=None):
     ql = q.lower()
-    nums = [float(x.replace(",", "")) for x in re.findall(r"\d[\d,]*\.?\d*", q) if x.replace(",", "").replace(".", "")]
+    nums = _amounts(q)
     if "afford" in ql or "buy" in ql:
         return "afford", {"amount": nums[0] if nums else 0}
+    cm = _CAT_RE.search(q)
+    cat = CATEGORY_WORDS[cm.group(1).lower()] if cm else None
+    month = _find_month(q, df)
+    if cat and (month or _SPEND_WORDS.search(q)):
+        return "month_total", {"category": cat, "month": month or _latest_full_month(df)}
     if "subscri" in ql:
         return "list_subscriptions", {}
     if "goal" in ql:
         return "goal_status", {}
     if "top" in ql or "merchant" in ql or "where" in ql:
-        return "top_merchants", {}
+        return "top_merchants", ({"month": month} if month else {})
+    if cat:
+        return "month_total", {"category": cat, "month": month or _latest_full_month(df)}
     return "forecast", {"horizon": 30}
 
 
@@ -232,7 +310,7 @@ def answer(question, df, model, balance, goals, llm=None):
         except Exception:
             pass
     if name is None:
-        name, args = _heuristic(str(question))
+        name, args = _heuristic(str(question), df)
     result, args = _run_tool_args(tools, name, args)
     try:
         fallback = _fallback_text(name, result)

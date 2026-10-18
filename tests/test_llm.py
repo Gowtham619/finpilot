@@ -30,11 +30,26 @@ def test_bad_json_raises_unavailable():
 
 
 def test_retries_once_then_raises(monkeypatch):
-    monkeypatch.setattr("finpilot.llm.time.sleep", lambda s: None)
+    sleeps = []
+    monkeypatch.setattr("finpilot.llm.time.sleep", lambda s: sleeps.append(s))
     client, calls = make_client([RuntimeError("x"), RuntimeError("y")])
     with pytest.raises(LLMUnavailable):
         LLM(client=client).complete("s", "u")
     assert calls["n"] == 2
+    assert sleeps == [1]  # sleep between attempts only, not after the last one
+
+
+def test_client_has_timeout_and_no_sdk_retries(monkeypatch):
+    seen = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kw):
+            seen.update(kw)
+    monkeypatch.setenv("MESH_API_KEY", "test-key")
+    monkeypatch.setattr("finpilot.llm.OpenAI", FakeOpenAI)
+    LLM().client
+    assert seen["timeout"] == 20 and seen["max_retries"] == 0
+    assert seen["base_url"] == config.MESH_BASE_URL
 
 
 def test_retry_recovers(monkeypatch):

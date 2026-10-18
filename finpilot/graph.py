@@ -64,7 +64,9 @@ def build_graph(llm=None, tr=default_trace, persist=None):
                                          state["forecast"]["goals"])
         emit(state, "advisor", "tool", f"{len(cands)} candidate actions from findings and forecast")
         recs = advisor.advise(cands, llm, getattr(llm, "model", "") if llm else "")
-        emit(state, "advisor", "result", f"drafted {len(recs)} recommendations")
+        n_llm = sum(r.get("model") != "template" for r in recs)
+        emit(state, "advisor", "result", f"drafted {len(recs)} recommendations ({n_llm} written by the LLM)",
+             {"llm_written": [r["id"] for r in recs if r.get("model") != "template"]})
         return {"recs": recs}
 
     def n_verify(state):

@@ -150,3 +150,63 @@ def test_render_md_with_ablation_and_prompt():
     res["grounding"] = {"recs": 4, "first_pass_ok": 3, "first_pass_caught": 1, "first_pass_grounding_rate": 0.75, "final_verified": 4}
     md = R.render_md(res)
     assert "0.25 of 4 recs caught" in md and "flat-balance" in md and "(0 recs)" in md
+
+
+# ---- final review fix C4: eval must not pass off rules-only/template output as LLM results ----
+def _down(s, u):
+    from finpilot.llm import LLMUnavailable
+    raise LLMUnavailable("MESH_API_KEY not set")
+
+
+def test_eval_preflight_aborts_with_clear_message(tmp_path, monkeypatch):
+    import eval.run_eval as R
+    monkeypatch.setattr(R, "OUT", tmp_path)
+    with pytest.raises(SystemExit, match="LLM preflight failed.*--no-llm"):
+        R.main([], llm=FakeLLM(_down))
+    assert not (tmp_path / "results.md").exists()  # nothing recorded
+    assert R.preflight(FakeLLM(lambda s, u: {"ok": True})) == {"ok": True}
+
+
+def test_hybrid_records_llm_labeled_rows():
+    import eval.run_eval as R
+    from eval.generate import load_persona
+    p = load_persona("priya")
+    assert R.eval_categorization(p, FakeLLM(_down))["hybrid"]["n_llm_labeled"] == 0
+    labeled = R.eval_categorization(p, FakeLLM(lambda s, u: {m: "dining" for m in json.loads(u)}))
+    assert labeled["hybrid"]["n_llm_labeled"] > 0
+
+
+def test_grounding_counts_only_llm_written_recs():
+    import eval.run_eval as R
+    from eval.generate import load_persona
+    p = load_persona("priya")
+    g = R.eval_grounding(p, FakeLLM(lambda s, u: {}))  # model answers, but writes no recs -> templates
+    assert g["recs"] == 0 and g["first_pass_grounding_rate"] is None and g["template_recs"] > 0
+    res = {"categorization": {"rules_only": None, "hybrid": None}, "detection": {}, "forecast_meta":
+           {"n_personas": 1, "n_origins_per_persona": 1, "total_months": 1}, "personas": ["priya"],
+           "forecast": {k: {m: None for m in ("balance_mape", "mae_vs_monthly_spend", "pinball_vs_monthly_spend",
+                                              "net_flow_ape", "band_coverage")}
+                        for k in ("model", "flat_balance", "seasonal_naive", "trailing_mean")},
+           "calibration": {"n": 0, "mean_pred": 0, "observed": 0, "brier": 0, "base_brier": 0,
+                           "brier_skill": None, "bins": []},
+           "grounding": g, "methodology": [],
+           "ablation": {"categorization": {k: {"accuracy": None, "macro_f1": None, "n_used": 0}
+                                           for k in ("rules_only", "llm_only", "hybrid")},
+                        "advice": {"llm_only": {"recs": 0, "with_issues": 0, "hallucination_rate": None}},
+                        "forecast": {"llm_only": {"net_flow_ape": None, "n_used": 0}}}}
+    md = R.render_md(res)
+    assert "n/a: no LLM-written recs" in md and "None" not in md and "1.0 (" not in md
+
+
+def test_grounding_counts_llm_written_recs_when_present():
+    import eval.run_eval as R
+    from eval.generate import load_persona
+    p = load_persona("priya")
+
+    def handler(s, u):
+        if "financial advisor" in s:
+            cands = json.loads(u)
+            return {"recommendations": [{"cid": c["cid"], "text": "Do it.", "claims": c["claims"]} for c in cands]}
+        return {}
+    g = R.eval_grounding(p, FakeLLM(handler))
+    assert g["recs"] > 0 and g["first_pass_caught"] >= 1  # "Do it." omits every claim value

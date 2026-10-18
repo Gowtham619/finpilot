@@ -15,7 +15,7 @@ from finpilot.agents.categorizer import categorize_df
 from finpilot.engines import analyze as A
 from finpilot.engines import forecast as F
 from finpilot.engines.categorize import normalize_merchant
-from finpilot.llm import LLM
+from finpilot.llm import LLM, LLMUnavailable
 from finpilot.trace import Trace
 
 OUT = pathlib.Path(__file__).parent
@@ -35,9 +35,12 @@ def eval_categorization(persona, llm):
         if name == "hybrid" and llm is None:
             out[name] = None
             continue
-        pred = categorize_df(persona.df, use)["category"]
+        cat = categorize_df(persona.df, use)
+        pred = cat["category"]
         out[name] = {"accuracy": round(M.accuracy(truth, pred), 4), "macro_f1": round(M.macro_f1(truth, pred), 4),
                      "coverage": round(float((pred != "uncategorized").mean()), 4)}
+        if name == "hybrid":  # rows the LLM actually labelled (0 means hybrid silently equals rules-only)
+            out[name]["n_llm_labeled"] = int((cat["category_source"] == "llm").sum())
     return out
 
 
@@ -174,10 +177,20 @@ def eval_grounding(persona, llm):
     g = graph.build_graph(llm, tr)
     out = g.invoke({"run_id": "eval", "profile": "eval", "request": {"type": "pipeline"}, "df": persona.df.copy(),
                     "opening": persona.opening_balance, "corrections": {}, "goals": []})
-    kinds = [e["kind"] for e in tr.since("eval") if e["agent"] == "verifier"]
+    evs = tr.since("eval")
+    llm_ids = set()
+    for e in evs:
+        if e["agent"] == "advisor" and e["kind"] == "result":
+            llm_ids |= set((e.get("data") or {}).get("llm_written", []))
+    # first-pass verdicts for LLM-written recs only: a deterministic template passing its own audit
+    # says nothing about grounding
+    kinds = [e["kind"] for e in evs if e["agent"] == "verifier" and e["kind"] in ("ok", "caught")
+             and (e.get("data") or {}).get("rec") in llm_ids]
     ok, caught = kinds.count("ok"), kinds.count("caught")
-    return {"recs": ok + caught, "first_pass_ok": ok, "first_pass_caught": caught,
-            "first_pass_grounding_rate": round(ok / max(ok + caught, 1), 4),
+    n = ok + caught
+    return {"recs": n, "first_pass_ok": ok, "first_pass_caught": caught,
+            "first_pass_grounding_rate": round(ok / n, 4) if n else None,
+            "template_recs": len(out["recs"]) + len(out.get("dropped") or []) - len(llm_ids),
             "final_verified": sum(r["verified"] for r in out["recs"])}
 
 
@@ -197,6 +210,8 @@ def _avg(dicts):
 def _fmt(x):
     if x is None:
         return "n/a"
+    if not isinstance(x, dict):
+        return str(x)
     return f"{x['mean']} ({x['min']}\u2013{x['max']})"
 
 
@@ -229,6 +244,9 @@ def render_md(res):
     for name in ("rules_only", "hybrid"):
         m = c.get(name)
         rows.append(f"| {name} | " + (" | ".join(_fmt(m[k]) for k in ("accuracy", "macro_f1", "coverage")) if m else "n/a | n/a | n/a") + " |")
+    n_llm = (c.get("hybrid") or {}).get("n_llm_labeled")
+    if n_llm is not None:
+        rows += ["", f"Hybrid rows labelled by the LLM per persona: {_fmt(n_llm)}."]
     rows += ["", "## Detection (precision / recall)", "| Task | Precision | Recall |", "|---|---|---|"]
     rows += [f"| {k} | {_fmt(v['precision'])} | {_fmt(v['recall'])} |" for k, v in d.items()]
     rows += ["", f"## Forecast (held-out months; {meta['n_personas']} personas x {meta['n_origins_per_persona']} origins = {meta['total_months']} months)",
@@ -243,7 +261,7 @@ def render_md(res):
     rows += ["", f"Coverage is over n={meta['total_months']} held-out months (daily points within each). A flat-balance forecast scores exactly 1.0 on net-flow APE, so it is reported only for completeness.",
              "", "## Calibration",
              f"Event: balance falls >10% below its starting level within 30 days. n={cal['n']} (overlapping origins), mean predicted {cal['mean_pred']}, "
-             f"observed {cal['observed']}, Brier {cal['brier']}, constant-base-rate Brier {cal['base_brier']}, Brier skill score {cal['brier_skill']}.",
+             f"observed {cal['observed']}, Brier {cal['brier']}, constant-base-rate Brier {cal['base_brier']}, Brier skill score {_fmt(cal['brier_skill'])}.",
              "", "| Predicted bin | Count | Mean predicted | Observed |", "|---|---|---|---|"]
     rows += [f"| {b['range']} | {b['count']} | {b['mean_pred'] if b['mean_pred'] is not None else '-'} | "
              f"{b['observed'] if b['observed'] is not None else '-'} |" for b in cal["bins"]]
@@ -254,12 +272,17 @@ def render_md(res):
         ac = ab["categorization"]
         la = ab["advice"]["llm_only"]
         fa = ab["forecast"]["llm_only"]
-        caught = (f"{round(g0['first_pass_caught'] / max(g0['recs'], 1), 4)} of {g0['recs']} recs caught (priya only); "
-                  f"final output 0 flagged by construction (only recs passing audit are kept)") if g0 else "n/a (--no-llm)"
+        if not g0:
+            caught = "n/a (--no-llm)"
+        elif not g0["recs"]:
+            caught = "n/a: no LLM-written recs"
+        else:
+            caught = (f"{round(g0['first_pass_caught'] / g0['recs'], 4)} of {g0['recs']} recs caught (priya only); "
+                      f"final output 0 flagged by construction (only recs passing audit are kept)")
         rows += ["| Task | LLM-only | Rules-only | Hybrid (FinPilot) |", "|---|---|---|---|",
-                 f"| Categorization accuracy (n personas: {ac['hybrid']['n_used']}) | {ac['llm_only']['accuracy']} | {ac['rules_only']['accuracy']} | {ac['hybrid']['accuracy']} |",
-                 f"| Forecast net-flow APE ({fa.get('n_used')} origins; 1.0 = balance stays flat) | {fa['net_flow_ape']} | flat-balance: {_fmt(f['flat_balance']['net_flow_ape'])} | model: {_fmt(f['model']['net_flow_ape'])} |",
-                 f"| LLM-only: share of recs with ungrounded/incorrect numbers ({la['recs']} recs) | {la['hallucination_rate']} | - | - |",
+                 f"| Categorization accuracy (n personas: {ac['hybrid']['n_used']}) | {_fmt(ac['llm_only']['accuracy'])} | {_fmt(ac['rules_only']['accuracy'])} | {_fmt(ac['hybrid']['accuracy'])} |",
+                 f"| Forecast net-flow APE ({fa.get('n_used')} origins; 1.0 = balance stays flat) | {_fmt(fa['net_flow_ape'])} | flat-balance: {_fmt(f['flat_balance']['net_flow_ape'])} | model: {_fmt(f['model']['net_flow_ape'])} |",
+                 f"| LLM-only: share of recs with ungrounded/incorrect numbers ({la['recs']} recs) | {_fmt(la['hallucination_rate'])} | - | - |",
                  f"| FinPilot hybrid: first-pass share caught by the Verifier | - | - | {caught} |"]
     else:
         rows.append("n/a (--no-llm)")
@@ -280,17 +303,39 @@ def render_md(res):
     else:
         rows.append(rd or "not run: no dataset supplied (see eval/real_data.py)")
     g = res.get("grounding")
-    rows += ["", "## Grounding", (f"first-pass grounding rate {g['first_pass_grounding_rate']} "
-                                  f"({g['first_pass_caught']} caught of {g['recs']}), final verified {g['final_verified']}" if g else "n/a (--no-llm)"),
+    if not g:
+        gline = "n/a (--no-llm)"
+    elif not g["recs"]:
+        gline = f"n/a: no LLM-written recs (all were templates), final verified {g['final_verified']}"
+    else:
+        gline = (f"first-pass grounding rate {g['first_pass_grounding_rate']} ({g['first_pass_caught']} caught of "
+                 f"{g['recs']} LLM-written recs), final verified {g['final_verified']}")
+    rows += ["", "## Grounding", gline,
              "", "## Methodology and limitations"]
     rows += [f"- {m}" for m in res["methodology"]]
     return "\n".join(rows)
 
 
-def main(argv=None):
+def preflight(llm):
+    """Fail loudly instead of silently recording rules-only numbers as 'hybrid'."""
+    try:
+        res = llm.json('Return {"ok":true}', "ping")
+    except LLMUnavailable as e:
+        raise SystemExit(f"LLM preflight failed: {e}. Set a valid MESH_API_KEY (and FINPILOT_MODEL), "
+                         f"or run `python -m eval.run_eval --no-llm`.")
+    if not isinstance(res, dict):
+        raise SystemExit("LLM preflight failed: the model did not return a JSON object.")
+    return res
+
+
+def main(argv=None, llm=None):
     argv = argv if argv is not None else sys.argv[1:]
     use_llm = "--no-llm" not in argv
-    llm = LLM() if use_llm else None
+    if use_llm:
+        llm = llm or LLM()
+        preflight(llm)
+    else:
+        llm = None
     personas = {n: load_persona(n) for n in PERSONAS}
     res = {"personas": list(personas), "model": getattr(llm, "model", None)}
     cats = [eval_categorization(p, llm) for p in personas.values()]

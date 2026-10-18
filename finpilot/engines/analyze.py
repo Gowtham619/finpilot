@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import OrderedDict
+
 import numpy as np
 import pandas as pd
 
@@ -19,9 +21,9 @@ def _mad(s: pd.Series, med: float) -> float:
 def monthly_aggregates(df):
     spend = df[df["amount"] < 0].copy()
     spend["month"] = spend["date"].dt.to_period("M").astype(str)
-    spend["spend"] = -spend["amount"]
+    spend["spend"] = -spend["amount"].astype(float)
     return spend.pivot_table(index="month", columns="category", values="spend",
-                             aggfunc="sum", fill_value=0.0)
+                             aggfunc="sum").fillna(0.0)
 
 
 def detect_recurring(df, min_n=3):
@@ -82,6 +84,57 @@ def unused_subscriptions(df, subs):
     return out
 
 
+SPIKE_SKIP = ("rent", "income", "uncategorized", "other")
+_MATRIX_CACHE: "OrderedDict[tuple, pd.DataFrame]" = OrderedDict()
+
+
+def _fingerprint(df):
+    cols = [c for c in ("date", "amount", "category", "merchant") if c in df.columns]
+    h = pd.util.hash_pandas_object(df[cols], index=True).to_numpy()
+    return (len(df), tuple(cols), int(h.sum()), int((h * np.uint64(31)).sum()))
+
+
+def spend_matrix(df):
+    """Months x categories of spend, the ONE aggregation behind category spikes and the
+    Verifier's month_total / pct_change claims (so the two agree by construction).
+
+    Large charges are detected from `df` itself (txn_outliers, recurring merchants excluded,
+    exactly as analyze_all does) and removed, so a month driven by a single flagged charge is
+    reported once, as a large charge. Rows: every calendar month present in `df`; a category
+    that has spending in some month counts as 0 in months where it has none. Treat the result
+    as read-only (it is cached by content)."""
+    key = _fingerprint(df)
+    hit = _MATRIX_CACHE.get(key)
+    if hit is not None:
+        return hit
+    rec = {r["merchant"] for r in detect_recurring(df)}
+    big = [f["txn_id"] for f in txn_outliers(df, rec)]
+    agg = monthly_aggregates(df.drop(index=big, errors="ignore"))
+    months = sorted(df["date"].dt.to_period("M").astype(str).unique())
+    agg = agg.reindex(months, fill_value=0.0)
+    _MATRIX_CACHE[key] = agg
+    while len(_MATRIX_CACHE) > 16:
+        _MATRIX_CACHE.popitem(last=False)
+    return agg
+
+
+def _month_stats(s, month):
+    """month total, baseline (median over all months of the series) and % change vs baseline."""
+    total = float(s[month])
+    med = float(s.median())
+    pct = (total / med - 1) * 100 if med > 0 else None
+    return {"month_total": total, "baseline": med, "pct_change": pct}
+
+
+def category_month_stats(df, category, month):
+    """Shared helper for (category, month): {"month_total", "baseline", "pct_change"} or None.
+    pct_change is None when the baseline median is 0."""
+    agg = spend_matrix(df)
+    if category not in agg.columns or month not in agg.index:
+        return None
+    return _month_stats(agg[category], month)
+
+
 # Threshold tuning (z=2.2, min_pct=0.6, max_findings=3), checked across seed 0 and the three personas.
 # Planted food_delivery 2026-07 robust z: seed0 2.57, priya 5.96, arjun 3.54, meera 6.22; the brief's z=3.5
 # could never fire on seed 0. No cross-category rule separates it from natural noise: other categories
@@ -90,24 +143,27 @@ def unused_subscriptions(df, subs):
 # results are capped to the max_findings most significant (by z) as a noise budget for the advisor.
 # Known cross-category false positives remain (e.g. seed0 shopping:2026-04 z=2.94, transport:2025-12 z=2.23;
 # meera dining:2026-03 z=5.57). Months driven by a single flagged large charge are not double reported:
-# pass those txn ids via exclude_txn_ids (analyze_all does).
-def category_spikes(df, z=2.2, min_pct=0.6, max_findings=3, exclude_txn_ids=frozenset()):
-    agg = monthly_aggregates(df.drop(index=list(exclude_txn_ids), errors="ignore"))
+# spend_matrix removes flagged large charges. rent/income and the catch-all labels (uncategorized,
+# other) are never reported as spikes.
+def category_spikes(df, z=2.2, min_pct=0.6, max_findings=3):
+    agg = spend_matrix(df)
     out = []
     for cat in agg.columns:
         s = agg[cat]
-        if len(s) < 4 or cat in ("rent", "income"):
+        if len(s) < 4 or cat in SPIKE_SKIP:
             continue
         med = float(s.median())
         if med <= 0:  # sparse category (median 0 -> division by zero); no baseline to spike from
             continue
         mad = _mad(s, med)
-        for month, v in s.items():
+        for month in s.index:
+            st = _month_stats(s, month)
+            v = st["month_total"]
             rz = 0.6745 * (v - med) / mad
             if rz > z and v > med * (1 + min_pct):
                 out.append((rz, {"id": f"spike:{cat}:{month}", "type": "category_spike",
-                            "category": cat, "month": month, "value": round(float(v), 2),
-                            "baseline": round(med, 2), "pct_change": round((v / med - 1) * 100, 1)}))
+                            "category": cat, "month": month, "value": round(v, 2),
+                            "baseline": round(st["baseline"], 2), "pct_change": round(st["pct_change"], 1)}))
     out.sort(key=lambda t: -t[0])
     return [f for _, f in out[:max_findings]]
 
@@ -180,6 +236,5 @@ def analyze_all(df):
     rec = {r["merchant"] for r in detect_recurring(df)}
     subs = detect_subscriptions(df)
     outliers = txn_outliers(df, rec)
-    big = {f["txn_id"] for f in outliers}
-    return (subs + unused_subscriptions(df, subs) + category_spikes(df, exclude_txn_ids=big)
+    return (subs + unused_subscriptions(df, subs) + category_spikes(df)
             + outliers + duplicate_charges(df) + behavior_triggers(df, rec))

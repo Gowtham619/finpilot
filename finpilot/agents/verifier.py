@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 
-from ..engines.verify import check_claim, ungrounded_numbers
+from ..engines.verify import check_claim, claims_missing_from_text, ungrounded_numbers
 from ..llm import LLMUnavailable
 from .advisor import template_text
 
@@ -14,16 +14,28 @@ REWRITE_SYSTEM = ("Rewrite the advice using ONLY the corrected claim values and 
 EVIDENCE_NOTE = "no recomputable claims; numbers checked against engine evidence only"
 
 
+def _checkable_text(rec):
+    """The goal's own name (e.g. "Bike 150cc") is quoted verbatim and is not a numeric claim."""
+    text = str(rec.get("text", ""))
+    name = rec.get("evidence", {}).get("name") if isinstance(rec.get("evidence"), dict) else None
+    if isinstance(name, str) and name.strip():
+        text = text.replace(name, " ")
+    return text
+
+
 def audit(rec, df):
     issues = []
+    text = _checkable_text(rec)
     for c in rec["claims"]:
         r = check_claim(c, df)
         if r["actual"] is None:
             issues.append({"type": "unverifiable", "claim": c})
         elif not r["ok"]:
             issues.append({"type": "mismatch", "claim": c, "actual": round(r["actual"], 2)})
-    for n in ungrounded_numbers(rec["text"], rec["claims"], rec["evidence"]):
+    for n in ungrounded_numbers(text, rec["claims"], rec["evidence"]):
         issues.append({"type": "ungrounded_number", "value": n})
+    for c in claims_missing_from_text(text, rec["claims"]):
+        issues.append({"type": "claim_not_in_text", "claim": c})
     return issues
 
 

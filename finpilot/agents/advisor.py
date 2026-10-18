@@ -60,19 +60,32 @@ def build_candidates(findings, df, forecast=None, goals=None):
     return out
 
 
+def _cv(rec, kind, default):
+    """Claim value for `kind` if the rec carries that claim, so templates state exactly what is verified."""
+    for c in rec.get("claims") or []:
+        if isinstance(c, dict) and c.get("kind") == kind and isinstance(c.get("value"), (int, float)) \
+                and not isinstance(c.get("value"), bool):
+            return c["value"]
+    return default
+
+
 def template_text(rec):
     e, t = rec["evidence"], rec["trigger_type"]
     if t == "unused_subscription":
-        return (f"Cancel {e['merchant']}: it costs {inr(e['monthly_cost'])}/month "
-                f"({inr(e['annual_cost'])}/year) and looks unused — {e['detail']}.")
+        return (f"Cancel {e['merchant']}: it costs {inr(_cv(rec, 'monthly_cost', e['monthly_cost']))}/month "
+                f"({inr(_cv(rec, 'annual_cost', e['annual_cost']))}/year) and looks unused — {e['detail']}.")
     if t == "category_spike":
-        return (f"{e['category'].replace('_', ' ').title()} spend was {inr(e['value'])} in {e['month']}, "
-                f"{e['pct_change']:.0f}% above your usual {inr(e['baseline'])}. "
-                f"Bringing it back to normal saves about {inr(e['excess'])} a month.")
+        cat = e['category'].replace('_', ' ')
+        return (f"In {e['month']} {cat} spend was {inr(_cv(rec, 'month_total', e['value']))}, "
+                f"{inr(e['excess'])} over your usual {inr(e['baseline'])} "
+                f"({_cv(rec, 'pct_change', e['pct_change']):.0f}% above). "
+                f"Bringing it back to normal would have saved about {inr(e['excess'])} that month.")
     if t == "duplicate_charge":
-        return f"{e['merchant']} charged {inr(e['amount'])} twice within two days (second charge {e['date']}). Dispute it."
+        return (f"{e['merchant']} charged {inr(_cv(rec, 'txn_amount', e['amount']))} twice within two days "
+                f"(second charge {e['date']}). Dispute it.")
     if t == "large_charge":
-        return f"A {inr(e['amount'])} charge at {e['merchant']} on {e['date']} is far above your normal spend. Confirm it is yours."
+        return (f"A {inr(_cv(rec, 'txn_amount', e['amount']))} charge at {e['merchant']} on {e['date']} "
+                f"is far above your normal spend. Confirm it is yours.")
     if t == "behavior_trigger":
         return (f"{e['share_pct']:.0f}% of your {e['category'].replace('_', ' ')} spending lands in the "
                 f"{e['window_days']} days after payday ({e['ratio']:.1f}x the normal rate). Delay those orders a few days.")

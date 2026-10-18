@@ -11,6 +11,16 @@ from .agents.common import inr
 log = logging.getLogger("finpilot.digest")
 
 
+# "One action" ranking: recurring savings first, past one-off spikes and habits last; ties by savings.
+ACTION_PRIORITY = {"unused_subscription": 0, "duplicate_charge": 1, "forecast_risk": 2, "large_charge": 3,
+                   "goal_behind": 4, "category_spike": 5, "behavior_trigger": 6}
+
+
+def pick_action(recs):
+    return min(recs, key=lambda r: (ACTION_PRIORITY.get(r.get("trigger_type"), 9),
+                                    -(r.get("est_monthly_savings", 0) + r.get("est_one_off", 0))), default=None)
+
+
 def build_digest(profile):
     with db.session() as s:
         recs = [r for r in db.load_recs(s, profile) if r.get("verified")]
@@ -18,7 +28,7 @@ def build_digest(profile):
     if not recs and not fc:
         return f"No data yet for {profile}."
     insight = (fc or {}).get("narrative") or "No forecast yet."
-    best = max(recs, key=lambda r: r.get("est_monthly_savings", 0) + r.get("est_one_off", 0), default=None)
+    best = pick_action(recs)
     lines = [f"FinPilot weekly digest for {profile}", "", f"Key insight: {insight}", ""]
     lines.append(f"One action: {best['text']}" if best else "One action: nothing urgent this week.")
     if best:

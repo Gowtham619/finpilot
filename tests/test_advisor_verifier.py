@@ -93,7 +93,7 @@ def test_ungrounded_number_in_text_is_caught(world):
     _, df, findings = world
     cands = [c for c in AD.build_candidates(findings, df) if "HOTSTAR" in c["action"]]
     recs = AD.advise(cands, None)
-    recs[0]["text"] = "Cancel HOTSTAR (₹299/month) and also save ₹4,321 elsewhere."
+    recs[0]["text"] = "Cancel HOTSTAR (₹299/month, ₹3,588/year) and also save ₹4,321 elsewhere."
     issues = VF.audit(recs[0], df)
     assert [i["type"] for i in issues] == ["ungrounded_number"]
     assert issues[0]["value"] == 4321.0
@@ -231,5 +231,107 @@ def test_currency_escape_in_rec_text_is_flagged(world):
     _, df, findings = world
     cands = [c for c in AD.build_candidates(findings, df) if "HOTSTAR" in c["action"]]
     recs = AD.advise(cands, None)
-    recs[0]["text"] = "Cancel HOTSTAR (₹299/month) and save ₹1.5k more."
+    recs[0]["text"] = "Cancel HOTSTAR (₹299/month, ₹3,588/year) and save ₹1.5k more."
     assert [i["type"] for i in VF.audit(recs[0], df)] == ["ungrounded_number"]
+
+
+# ---- final review fixes: C1 (shared aggregation + claim-in-text), C2 (spike scope/wording), I3, I10 ----
+from eval.generate import PERSONAS, load_persona  # noqa: E402
+from finpilot.agents.categorizer import categorize_df  # noqa: E402
+from finpilot.engines import analyze as A  # noqa: E402
+from finpilot.engines.verify import recompute, ungrounded_numbers  # noqa: E402
+
+
+def _dfs():
+    p = generate(seed=0)
+    d0 = p.df.copy()
+    d0["merchant"] = d0.description.map(normalize_merchant)
+    d0["category"] = p.truth.categories
+    yield "seed0-oracle", d0
+    for n in PERSONAS:
+        yield f"{n}-rules", categorize_df(load_persona(n).df)  # the real no-LLM path
+
+
+@pytest.mark.parametrize("name,df", list(_dfs()), ids=lambda x: x if isinstance(x, str) else "")
+def test_spike_findings_agree_with_verifier_and_template(name, df):
+    spikes = [f for f in A.analyze_all(df) if f["type"] == "category_spike"]
+    assert spikes, name
+    for f in spikes:
+        assert f["category"] not in ("uncategorized", "other", "rent", "income")
+        kw = {"category": f["category"], "month": f["month"]}
+        assert recompute({"kind": "month_total", **kw}, df) == pytest.approx(f["value"], abs=0.01)
+        assert recompute({"kind": "pct_change", **kw}, df) == pytest.approx(f["pct_change"], abs=0.06)
+        cand = next(c for c in AD.build_candidates([f], df))
+        rec = AD.advise([cand], None)[0]
+        assert {c["kind"] for c in rec["claims"]} == {"month_total", "pct_change"}
+        assert VF.audit(rec, df) == [], rec["text"]
+        assert f"{f['pct_change']:.0f}%" in rec["text"]
+        assert "that month" in rec["text"] and "a month" not in rec["text"]
+
+
+def test_no_spike_on_catch_all_categories():
+    df = categorize_df(load_persona("priya").df)
+    assert (df["category"] == "uncategorized").sum() > 0
+    assert not [f for f in A.category_spikes(df, z=0.1, min_pct=0.0, max_findings=99)
+                if f["category"] in ("uncategorized", "other", "rent", "income")]
+
+
+def _spike_rec(world):
+    _, df, findings = world
+    c = next(c for c in AD.build_candidates(findings, df) if c["trigger_type"] == "category_spike")
+    return df, c
+
+
+def test_llm_text_contradicting_claim_is_caught(world):
+    df, c = _spike_rec(world)
+    pct = next(x["value"] for x in c["claims"] if x["kind"] == "pct_change")
+    total = next(x["value"] for x in c["claims"] if x["kind"] == "month_total")
+    bad = f"You spent {AD.inr(total)}, {pct * 4 + 50:.0f}% above normal."  # contradicts the verified pct
+
+    recs = AD.advise([c], FakeLLM(lambda s, u: {"recommendations": [{"cid": c["cid"], "text": bad,
+                                                                     "claims": c["claims"]}]}))
+    issues = VF.audit(recs[0], df)
+    assert "claim_not_in_text" in {i["type"] for i in issues}
+    kept, dropped = VF.verify_all(recs, df)
+    assert kept and kept[0]["model"] == "template" and f"{pct:.0f}%" in kept[0]["text"]
+
+
+def test_llm_text_omitting_claims_is_caught(world):
+    df, c = _spike_rec(world)
+    recs = AD.advise([c], FakeLLM(lambda s, u: {"recommendations": [
+        {"cid": c["cid"], "text": "Take a personal loan of twelve lakh rupees and save 100% of fees.",
+         "claims": c["claims"]}]}))
+    types = [i["type"] for i in VF.audit(recs[0], df)]
+    assert types.count("claim_not_in_text") == 2 and "ungrounded_number" in types  # 100% is now checked
+    kept, _ = VF.verify_all(recs, df)
+    assert kept and "loan" not in kept[0]["text"]
+
+
+def test_digest_action_prefers_recurring_saving():
+    from finpilot.digest import pick_action
+    spike = {"trigger_type": "category_spike", "est_monthly_savings": 9000.0, "est_one_off": 0.0}
+    unused = {"trigger_type": "unused_subscription", "est_monthly_savings": 299.0, "est_one_off": 0.0}
+    big_unused = dict(unused, est_monthly_savings=1500.0)
+    assert pick_action([spike, unused]) is unused
+    assert pick_action([spike, unused, big_unused]) is big_unused
+    assert pick_action([spike]) is spike and pick_action([]) is None
+
+
+def test_goal_name_with_digits_is_not_an_ungrounded_number(world):
+    _, df, findings = world
+    cands = AD.build_candidates([], df, goals=[{"name": "Bike 150cc", "p_met": 0.2, "target": 90000.0}])
+    recs = AD.advise(cands, None)
+    assert "150cc" in recs[0]["text"]
+    assert VF.audit(recs[0], df) == []
+    kept, dropped = VF.verify_all(recs, df)
+    assert len(kept) == 1 and not dropped
+
+
+def test_small_numbers_with_percent_or_currency_are_checked():
+    assert ungrounded_numbers("There is a 60% chance you go overdrawn", [], {"p": 0.0}) == [60.0]
+    assert ungrounded_numbers("Your risk is 5% now", [], {"p": 0.0}) == [5.0]
+    assert ungrounded_numbers("Save ₹5 or $8 or USD 7 or Rs 9", [], {}) == [5.0, 8.0, 7.0, 9.0]
+    assert ungrounded_numbers("$5000 saved", [], {}) == [5000.0]
+    assert ungrounded_numbers("over 60 days, 3 times, 1.8x", [], {}) == []  # bare: still exempt
+    assert ungrounded_numbers("A 12% cut", [], {"cut_pct": 12}) == []
+    assert ungrounded_numbers("in 5 hours 7", [], {}) == []  # 'rs' inside a word is not a currency

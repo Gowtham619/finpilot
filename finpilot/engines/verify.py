@@ -5,11 +5,9 @@ import re
 
 import pandas as pd
 
+from .analyze import category_month_stats
+
 ALLOWED_CONSTANTS = {12, 24, 30, 60, 90, 100}
-
-
-def _month(df):
-    return df["date"].dt.to_period("M").astype(str)
 
 
 def _recompute(claim, df):
@@ -20,15 +18,10 @@ def _recompute(claim, df):
             return None
         v = float(abs(g["amount"].mean()))
         return v * 12 if k == "annual_cost" else v
-    if k == "month_total":
-        m = df[(df["category"] == claim["category"]) & (df["amount"] < 0) & (_month(df) == claim["month"])]
-        return None if m.empty else float(-m["amount"].sum())
-    if k == "pct_change":
-        s = df[(df["category"] == claim["category"]) & (df["amount"] < 0)]
-        tot = (-s["amount"]).groupby(_month(s)).sum()
-        if claim["month"] not in tot.index or len(tot) < 3:
-            return None
-        return float((tot[claim["month"]] / tot.median() - 1) * 100)
+    if k in ("month_total", "pct_change"):
+        # same aggregation as the spike engine (flagged large charges excluded, zero months counted)
+        st = category_month_stats(df, claim["category"], str(claim["month"]))
+        return None if st is None else st[k]
     if k == "txn_amount":
         try:
             return float(abs(df.loc[int(claim["txn_id"]), "amount"]))
@@ -87,31 +80,65 @@ def _flatten_numbers(obj):
 
 _SUFFIX = {"k": 1e3, "lakh": 1e5, "lakhs": 1e5, "lac": 1e5, "lacs": 1e5,
            "crore": 1e7, "crores": 1e7, "cr": 1e7}
-_TOKEN = re.compile(r"(?P<cur>₹|Rs\.?|INR)?\s*(?P<num>\d[\d,]*\.?\d*)\s*"
-                    r"(?P<suf>(?:lakhs?|lacs?|crores?|cr|k)\b)?", re.I)
+_TOKEN = re.compile(r"(?P<cur>₹|\$|(?<![A-Za-z])(?:Rs\.?|INR|USD))?\s*(?P<num>\d[\d,]*\.?\d*)\s*"
+                    r"(?P<suf>(?:lakhs?|lacs?|crores?|cr|k)\b)?(?P<pct>\s*%)?", re.I)
 _DATE = re.compile(r"(?<!\d)(19|20)\d{2}-\d{2}(-\d{2})?(?!\d)")
 
 
-def ungrounded_numbers(text, claims, evidence):
-    vals = [c.get("value") for c in claims if isinstance(c, dict)]
-    allowed = list(_flatten_numbers(vals)) + list(_flatten_numbers(evidence))
-    allowed += [a * 100 for a in allowed if 0 < abs(a) <= 1]  # probabilities quoted as percents
+def text_numbers(text):
+    """Numbers stated in text, ISO dates removed. Yields dicts {value, currency, suffix, percent, token}."""
     text = _DATE.sub(" ", str(text))  # ISO dates and months are not claims
-    out = []
     for m in _TOKEN.finditer(text):
         tok = m.group("num").rstrip(".,")
         raw = tok.replace(",", "")
         if not raw:
             continue
-        cur, suf = m.group("cur"), m.group("suf")
-        n = float(raw) * (_SUFFIX[suf.lower()] if suf else 1)
-        if not cur and not suf:
-            if re.fullmatch(r"\d{4}", tok) and 1990 <= n <= 2100:
+        suf = m.group("suf")
+        try:
+            n = float(raw) * (_SUFFIX[suf.lower()] if suf else 1)
+        except ValueError:
+            continue
+        yield {"value": n, "currency": bool(m.group("cur")), "suffix": bool(suf),
+               "percent": bool(m.group("pct")), "token": tok}
+
+
+def matches(n, a):
+    """Shared tolerance: within 1% of a or within 1 in absolute terms, whichever is larger."""
+    return abs(n - a) <= max(1.0, 0.01 * abs(a))
+
+
+def ungrounded_numbers(text, claims, evidence):
+    """Numbers in text that match no claim value or evidence number. Exempt (not checked): ISO dates,
+    bare 4-digit years 1990-2100, and BARE numbers under 10 or in ALLOWED_CONSTANTS. A number followed
+    by '%' or preceded by a currency token (₹, Rs, INR, $, USD) is always checked."""
+    vals = [c.get("value") for c in claims if isinstance(c, dict)]
+    allowed = list(_flatten_numbers(vals)) + list(_flatten_numbers(evidence))
+    allowed += [a * 100 for a in allowed if 0 < abs(a) <= 1]  # probabilities quoted as percents
+    out = []
+    for t in text_numbers(text):
+        n = t["value"]
+        strict = t["currency"] or t["percent"]
+        if not strict and not t["suffix"]:
+            if re.fullmatch(r"\d{4}", t["token"]) and 1990 <= n <= 2100:
                 continue
             if n in ALLOWED_CONSTANTS:
                 continue
-        if n < 10:
+        if n < 10 and not strict:
             continue
-        if not any(abs(n - a) <= max(1.0, 0.01 * abs(a)) for a in allowed):
+        if not any(matches(n, a) for a in allowed):
             out.append(n)
+    return out
+
+
+def claims_missing_from_text(text, claims):
+    """Claims whose value is not stated in the text (same tolerance; a pct_change is matched as the
+    number before '%'). Catches advice that omits or contradicts its own verified claims."""
+    nums = [t["value"] for t in text_numbers(text)]
+    out = []
+    for c in claims:
+        if not isinstance(c, dict) or not _numeric(c.get("value")):
+            continue
+        v = abs(float(c["value"]))
+        if not any(matches(n, v) for n in nums):
+            out.append(c)
     return out

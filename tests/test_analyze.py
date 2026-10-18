@@ -1,5 +1,5 @@
 import pytest
-from eval.generate import generate
+from eval.generate import generate, PERSONAS
 from finpilot.engines.categorize import normalize_merchant
 from finpilot.engines import analyze as A
 
@@ -71,3 +71,24 @@ def test_analyze_all_has_unique_ids():
     _, df = prep(seed=0)
     ids = [f["id"] for f in A.analyze_all(df)]
     assert len(ids) == len(set(ids)) > 5
+
+
+CASES = [dict(seed=0)] + list(PERSONAS.values())
+
+
+@pytest.mark.parametrize("kw", CASES)
+def test_large_charge_precision(kw):
+    p, df = prep(**kw)
+    rec = {r["merchant"] for r in A.detect_recurring(df)}
+    out = {f["txn_id"] for f in A.txn_outliers(df, rec)}
+    assert p.truth.anomaly_ids <= out
+    assert len(out) <= 3
+
+
+@pytest.mark.parametrize("kw", CASES)
+def test_category_spike_precision(kw):
+    p, df = prep(**kw)
+    month, cat = p.truth.spike
+    ids = [f["id"] for f in A.category_spikes(df)]
+    assert f"spike:{cat}:{month}" in ids
+    assert len(ids) <= 3

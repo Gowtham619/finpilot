@@ -33,7 +33,12 @@ def afford(model, balance, req, llm=None):
     evidence = {"sim": sim, "best": best, "fix": fix, "amount": req["amount"]}
     out = narrate(llm, SYSTEM, evidence, None)
     narrative = grounded_or(out.get("narrative") if isinstance(out, dict) else None, evidence, text)
-    return {"verdict": verdict, "sim": sim, "best_dates": best, "fix": fix, "narrative": narrative}
+    res = {"verdict": verdict, "sim": sim, "best_dates": best, "fix": fix, "narrative": narrative}
+    n_ign = int(sim.get("ignored_flows") or 0)
+    if n_ign > 0:  # deterministic, added after grounding so it cannot fail it
+        res["notice"] = f"{n_ign} installment(s) fall outside the 60-day window and are not simulated"
+        res["narrative"] = f"{narrative} ({res['notice']}.)"
+    return res
 
 
 def run_duel(model, balance, req, llm=None):

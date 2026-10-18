@@ -249,3 +249,24 @@ def test_profile_regex_on_every_endpoint(client):
     assert client.post(f"/api/correct/{bad}", json={"category": "dining"}).status_code == 400
     with pytest.raises(ValueError):
         service.start_pipeline("bad name", pd.DataFrame(), 0)
+
+
+def test_afford_financed_notice_and_unfinanced_none(client):
+    client.post("/api/load/priya")
+    start = pd.Timestamp(client.get("/api/state/priya").json()["forecast"]["bands"]["dates"][0])
+    fin = client.post("/api/afford/priya", json={"amount": 120000, "financed_months": 12,
+                                                  "date": str(start.date())}).json()["answer"]
+    n = fin["sim"]["ignored_flows"]
+    assert n > 0 and fin["notice"] == f"{n} installment(s) fall outside the 60-day window and are not simulated"
+    assert fin["notice"] in fin["narrative"]
+    plain = client.post("/api/afford/priya", json={"amount": 5000}).json()["answer"]
+    assert not plain.get("notice")
+
+
+def test_duel_horizon_bounds(client):
+    client.post("/api/load/priya")
+    for h in (0, 366, -5, "abc", 1.5, True):
+        r = client.post("/api/duel/priya", json={"horizon": h, "a": {"amount": 0}, "b": {"amount": 0}})
+        assert r.status_code == 400, h
+    r = client.post("/api/duel/priya", json={"horizon": 30, "a": {"amount": 0}, "b": {"amount": 0}})
+    assert r.status_code == 200

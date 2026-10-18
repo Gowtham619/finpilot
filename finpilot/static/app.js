@@ -128,6 +128,7 @@ async function init() {
       follow(r.run_id);
       const a = r.answer, o = $("#afOut"); o.replaceChildren();
       o.append(el("div", "card", a.narrative), el("div", "card", "Verdict: " + a.verdict));
+      if (a.notice) o.append(el("div", "card", "Notice: " + a.notice));
       a.best_dates.forEach((d) => o.append(el("div", "card", `${d.date}: overdraft risk ${pct(d.p_overdraft)}, median ${money(d.end_p50)}`)));
     }).catch(fail);
   };

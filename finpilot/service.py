@@ -183,9 +183,14 @@ def request(profile, req):
             o["date"] = _norm_date(o["date"], f"option {k} date") if o.get("date") else d0
             o["financed_months"] = _months(o)
             try:
-                hz = int(req.get("horizon", 90))
+                raw_h = req.get("horizon", 90)
+                if isinstance(raw_h, (float, bool)) and not (isinstance(raw_h, float) and raw_h.is_integer()):
+                    raise ValueError("horizon must be a whole number")
+                hz = int(raw_h)
             except (TypeError, ValueError):
                 raise ValueError("horizon must be a whole number")
+            if not 1 <= hz <= 365:
+                raise ValueError("horizon must be between 1 and 365")
             start = pd.Timestamp(d0)
             _flow_ok(f"option {k} ({o['name']})", o["amount"], o["date"], o["financed_months"],
                      start, start + pd.Timedelta(days=hz - 1))

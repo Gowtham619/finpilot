@@ -1,6 +1,6 @@
 # FinPilot
 
-A multi-agent personal-finance copilot (Agent Arena 2026, Track 02). You upload a bank-statement CSV (or load a demo persona); a LangGraph coordinator runs a team of agents that categorize transactions, find anomalies and wasteful subscriptions, forecast your balance with uncertainty, simulate purchases, and give advice in which every number is re-checked against your raw transactions before it is shown.
+A multi-agent personal-finance copilot (Agent Arena 2026, Track 02). You upload a bank-statement CSV (or load a demo persona); a LangGraph coordinator runs a team of agents that categorize transactions, find anomalies and wasteful subscriptions, forecast your balance with uncertainty, simulate purchases, and give advice. Every numeric claim in a recommendation that can be recomputed is recomputed from the raw transactions before the recommendation is shown; other narration is restricted to numbers present in engine-computed evidence (see "Verifier: guarantees and limits").
 
 Deployed demo: see "Before you submit" at the end (not deployed yet).
 
@@ -11,7 +11,7 @@ Deployed demo: see "Before you submit" at the end (not deployed yet).
 3. **Analyze.** Engines find large charges, duplicate charges, category spikes, recurring subscriptions, likely-unused subscriptions and payday-driven spending.
 4. **Forecast.** A weekday-profile model plus 1,000 weekday-matched bootstrap Monte Carlo paths give p10/p50/p90 balance bands, overdraft probability and goal ETAs.
 5. **Advise.** The Advisor turns findings into specific actions (e.g. cancel a subscription, dispute a duplicate charge), each carrying finding ids, evidence and numeric claims.
-6. **Verify.** The Verifier recomputes the claims from raw transactions and checks the numbers in the text. Mismatches are corrected or the recommendation is dropped. Only then is it displayed.
+6. **Verify.** The Verifier recomputes each recommendation's recomputable claims from raw transactions and checks the numbers in its text. Mismatching recommendations are corrected or dropped; only then are recommendations displayed. Overview, forecast, simulator and chat narration is not recomputed from raw transactions (numbers there are restricted to engine evidence).
 7. **Ask.** "Can I afford it?" simulates a purchase (optionally financed) against the Monte Carlo futures; "Decision duel" runs two options on identical random futures; Chat answers questions from read-only query tools; Goals track a target balance by a deadline.
 8. **Nudges.** A scheduler sends a weekly digest and a daily mid-month pace check (email only if SMTP is configured; otherwise stored for the UI).
 
@@ -50,13 +50,13 @@ START --route--> pipeline: categorize -> analyze -> forecast -> advise -> verify
 
 What it does, for each recommendation:
 - Recomputes every claim (`monthly_cost`, `annual_cost`, `month_total`, `pct_change`, `txn_amount`) from the raw transactions and compares with the stated value (tolerance: the larger of 1 or 2% of the true value; 3 points for `pct_change`).
-- Extracts the numbers from the advice text and requires each to match a claim value or a number in the engine evidence within 1%. Dates and a few constants (12, 24, 30, 60, 90, 100) are ignored.
+- Extracts the numbers from the advice text and requires each to match a claim value or a number in the engine evidence within 1% of that value or within 1 in absolute terms, whichever is larger (so 15 vs 16 passes). Numbers under 10, dates and a few constants (12, 24, 30, 60, 90, 100) are not checked at all.
 - On a mismatch it fixes the claims to the recomputed values and rewrites the text (LLM rewrite if available and itself clean, else a template). A claim that cannot be recomputed drops the recommendation.
 
 What it does not guarantee:
 - Recommendations of type `behavior_trigger`, `forecast_risk` and `goal_behind` have no recomputable claims. They are marked `verification: evidence_only`: their text numbers are checked only against the engine's own evidence, not against raw transactions.
 - Numbers below 10 are not checked. A `$` amount is not treated as a currency token (only `₹`, `Rs`, `INR`), so `$5000` is treated as the bare number 5000 (still compared, but not recognised as a currency amount).
-- The 1% tolerance means a number within 1% of a real value passes.
+- The tolerance (1% or +/-1 absolute, whichever is larger) means a number slightly off a real value passes.
 - It checks that numbers are consistent with the data, not that the advice is wise or that the narrative text from other agents (overview, forecast narrative) is correct.
 
 **Example of a Verifier catch (scripted LLM in tests, not a live-model run).** `tests/test_graph.py::test_pipeline_verifier_catches_llm_hallucination` scripts a fake LLM that triples every claim value and appends "save ₹99999". This is the Verifier trace from running it on the `generate(seed=0)` data:
@@ -152,7 +152,7 @@ Not run: no dataset supplied (see `eval/real_data.py`).
 - **Hybrid categorization.** Rules first (cheap, deterministic), LLM only for the remainder, user corrections override. Whether hybrid beats LLM-only is exactly what the ablation is meant to measure; it has not been run.
 - **Weekday-matched bootstrap Monte Carlo.** Daily discretionary residuals are resampled within the same weekday; known recurring bills are projected exactly rather than sampled.
 - **Common random numbers in the simulator.** Both sides of a duel (and baseline vs purchase) run on identical random futures, so the difference reflects the decision, not sampling noise.
-- **Verifier before display.** Recommendations reach the UI only after the audit; failures are corrected or dropped, and the audit result is stored with the recommendation.
+- **Verifier before display.** Recommendations reach the UI only after the audit; failing recommendations are corrected or dropped, and the audit result is stored with each recommendation. Other narration is not recomputed from raw transactions; it is restricted to numbers in engine evidence.
 - **Degradation paths.** No key, network error or malformed model output falls back to deterministic templates; the test suite runs entirely without an LLM.
 - **UI safety.** Rendering uses `textContent`, so uploaded merchant names cannot inject markup.
 
@@ -175,6 +175,10 @@ docker build -t finpilot .
 docker run --rm -p 8000:8000 -e MESH_API_KEY=$MESH_API_KEY finpilot
 ```
 
+The image keeps SQLite in `/tmp` (`FINPILOT_DB=sqlite:////tmp/finpilot.db`), so data is ephemeral: each restart re-seeds the demo persona and loses uploads and corrections. The scheduler also runs inside the container (`FINPILOT_SCHEDULER=1`); it only emails if SMTP is configured.
+
+Tested environment: local Python 3.14 with pandas 3.0.6 (251 tests pass). The Docker image targets Python 3.12 and the CI workflow uses Python 3.11; neither the Docker build nor the CI run has been tested.
+
 Without Docker, the same autoseeded start was smoke-tested locally with `FINPILOT_AUTOSEED=1 uvicorn finpilot.api:app` (page and `/api/state/priya` returned data).
 
 Environment variables:
@@ -193,7 +197,7 @@ Scheduler jobs (server local time, missed runs coalesced with 1 h grace): weekly
 
 ### Security notes
 - `POST /api/digest/{profile}` is unauthenticated. The recipient is fixed to `DIGEST_TO` and cannot be chosen by the caller, but anyone who can reach the server can trigger a digest email. Do not configure SMTP on a public deployment unless that is acceptable (use a throwaway address).
-- Uploads are limited to 5 MB and 50,000 rows. Profile names must match `^[A-Za-z0-9_-]{1,40}$`.
+- Input limits: uploads 5 MB and 50,000 rows; `financed_months` 0..60; simulation `horizon` 1..365 days. Profile names must match `^[A-Za-z0-9_-]{1,40}$`.
 - There is no user authentication: profiles are not private to a visitor. Do not upload real financial data to a shared deployment.
 - The CI workflow `.github/workflows/agent-arena-2026-checks.yml` (required by the hackathon) downloads a script from the hackathon server and runs it with the repository secrets available. Use a revocable Mesh key.
 

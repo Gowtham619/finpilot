@@ -88,6 +88,31 @@ SYSTEM = ("You are a financial advisor. For each candidate write at most two sen
           "copies the candidate's claim objects, with 'value' set to the number you state in the text.")
 
 
+_ID_KEYS = ("kind", "merchant", "category", "month", "txn_id")
+
+
+def _identity(claim):
+    return tuple(str(claim.get(k)) for k in _ID_KEYS)
+
+
+def _merge_claims(engine_claims, llm_claims):
+    """The engine decides WHAT is verified; the LLM may only restate the value of a matching claim."""
+    merged = [dict(c) for c in engine_claims]
+    if not isinstance(llm_claims, list):
+        return merged
+    for lc in llm_claims:
+        if not isinstance(lc, dict):
+            continue
+        v = lc.get("value")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
+            continue
+        for c in merged:
+            if _identity(c) == _identity(lc):
+                c["value"] = v
+                break
+    return merged
+
+
 def advise(candidates, llm=None, model_name=""):
     by_cid = {}
     if llm is not None and candidates:
@@ -103,10 +128,9 @@ def advise(candidates, llm=None, model_name=""):
                  model=model_name if c["cid"] in by_cid else "template")
         if c["cid"] in by_cid:
             r["text"] = str(by_cid[c["cid"]]["text"])
-            llm_claims = by_cid[c["cid"]].get("claims")
-            if isinstance(llm_claims, list) and llm_claims:
-                r["claims"] = llm_claims
+            r["claims"] = _merge_claims(c["claims"], by_cid[c["cid"]].get("claims"))
         else:
             r["text"] = template_text(r)
+        r["verification"] = "recomputed" if r["claims"] else "evidence_only"
         recs.append(r)
     return recs

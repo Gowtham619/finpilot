@@ -145,3 +145,91 @@ def test_every_template_passes_its_own_audit(world):
         seen.add(c["trigger_type"])
         assert VF.audit(rec, df) == [], (c["trigger_type"], rec["text"])
     assert len(seen) >= 7
+
+
+MALFORMED = [{}, "junk", None, {"kind": "monthly_cost", "merchant": "HOTSTAR", "value": "₹5"},
+             {"kind": "monthly_cost", "value": 5}, {"kind": "txn_amount", "txn_id": None, "value": 24000},
+             {"kind": "monthly_cost", "merchant": "HOTSTAR"}]
+
+
+@pytest.mark.parametrize("bad", MALFORMED)
+def test_malformed_claims_through_verify_all_do_not_raise(world, bad):
+    _, df, findings = world
+    cands = [c for c in AD.build_candidates(findings, df) if "HOTSTAR" in c["action"]]
+    recs = AD.advise(cands, None)
+    recs[0]["claims"] = [bad]
+    events = []
+    kept, dropped = VF.verify_all(recs, df, None, emit=lambda k, s, d: events.append(k))
+    assert len(kept) + len(dropped) == 1
+    assert "caught" in events
+    if kept:  # identifiable claim with a bad value is corrected from the recomputed number
+        assert VF.audit(kept[0], df) == [] and kept[0]["claims"][0]["value"] == pytest.approx(299, abs=1)
+        assert "corrected" in events
+    else:
+        assert "dropped" in events
+
+
+def test_llm_cannot_choose_what_is_verified(world):
+    p, df, findings = world
+    cands = [c for c in AD.build_candidates(findings, df) if "HOTSTAR" in c["action"]]
+    orig = json.loads(json.dumps(cands[0]["claims"]))
+    tid = next(iter(p.truth.anomaly_ids))
+
+    def handler(s, u):
+        return {"recommendations": [{"cid": cands[0]["cid"],
+                                     "text": "Cancel HOTSTAR to save ₹24000 a month.",
+                                     "claims": [{"kind": "txn_amount", "txn_id": tid, "value": 24000}]}]}
+    recs = AD.advise(cands, FakeLLM(handler))
+    assert recs[0]["claims"] == orig
+    assert {c["kind"] for c in recs[0]["claims"]} == {"monthly_cost", "annual_cost"}
+    assert VF.audit(recs[0], df)  # fake 24000 flagged
+    kept, dropped = VF.verify_all(recs, df)
+    assert kept and "24000" not in kept[0]["text"] and kept[0]["model"] == "template"
+    assert "template" in kept[0]["verifier_notes"]
+
+
+def test_llm_value_restated_only_for_matching_identity(world):
+    _, df, findings = world
+    cands = [c for c in AD.build_candidates(findings, df) if "HOTSTAR" in c["action"]]
+    def handler(s, u):
+        return {"recommendations": [{"cid": cands[0]["cid"], "text": "Cancel HOTSTAR (₹299/month).",
+                                     "claims": [{"kind": "monthly_cost", "merchant": "NETFLIX", "value": 1},
+                                                {"kind": "monthly_cost", "merchant": "HOTSTAR", "value": 777}]}]}
+    recs = AD.advise(cands, FakeLLM(handler))
+    by = {c["kind"]: c["value"] for c in recs[0]["claims"]}
+    assert by["monthly_cost"] == 777 and by["annual_cost"] == cands[0]["claims"][1]["value"]
+    assert len(recs[0]["claims"]) == len(cands[0]["claims"])
+
+
+def test_evidence_only_recs_are_labelled_honestly(world):
+    _, df, findings = world
+    cands = AD.build_candidates(findings, df, goals=[{"name": "Fund", "p_met": 0.2}])
+    recs = AD.advise(cands, None)
+    kept, _ = VF.verify_all(recs, df)
+    ev = [r for r in kept if not r["claims"]]
+    rc = [r for r in kept if r["claims"]]
+    assert ev and rc
+    for r in ev:
+        assert r["verification"] == "evidence_only"
+        assert r["verifier_notes"] == "no recomputable claims; numbers checked against engine evidence only"
+    for r in rc:
+        assert r["verification"] == "recomputed" and "recomputed" in r["verifier_notes"]
+
+
+@pytest.mark.parametrize("rw", [{"text": 5}, {"text": ""}, {"text": None}, {"text": ["a"]}, ["x"]])
+def test_non_string_rewrite_falls_back_to_template(world, rw):
+    _, df, findings = world
+    cands = [c for c in AD.build_candidates(findings, df) if "HOTSTAR" in c["action"]]
+    recs = AD.advise(cands, None)
+    recs[0]["text"] = "Cancel HOTSTAR to save ₹999 a month."
+    kept, dropped = VF.verify_all(recs, df, FakeLLM(lambda s, u: rw))
+    assert kept and not dropped and "999" not in kept[0]["text"]
+    assert kept[0]["model"] == "template"
+
+
+def test_currency_escape_in_rec_text_is_flagged(world):
+    _, df, findings = world
+    cands = [c for c in AD.build_candidates(findings, df) if "HOTSTAR" in c["action"]]
+    recs = AD.advise(cands, None)
+    recs[0]["text"] = "Cancel HOTSTAR (₹299/month) and save ₹1.5k more."
+    assert [i["type"] for i in VF.audit(recs[0], df)] == ["ungrounded_number"]

@@ -11,6 +11,9 @@ REWRITE_SYSTEM = ("Rewrite the advice using ONLY the corrected claim values and 
                   "two sentences. Return JSON {\"text\": str}.")
 
 
+EVIDENCE_NOTE = "no recomputable claims; numbers checked against engine evidence only"
+
+
 def audit(rec, df):
     issues = []
     for c in rec["claims"]:
@@ -26,7 +29,7 @@ def audit(rec, df):
 
 def _describe(issues):
     return "; ".join(
-        f"{i['type']}: claimed {i['claim']['value']} vs actual {i['actual']}" if i["type"] == "mismatch"
+        f"{i['type']}: claimed {i['claim'].get('value')} vs actual {i['actual']}" if i["type"] == "mismatch"
         else f"{i['type']}: {i.get('claim') or i.get('value')}" for i in issues)
 
 
@@ -34,10 +37,16 @@ def verify_all(recs, df, llm=None, emit=None):
     emit = emit or (lambda kind, summary, data=None: None)
     kept, dropped = [], []
     for rec in recs:
+        rec["verification"] = "recomputed" if rec["claims"] else "evidence_only"
         issues = audit(rec, df)
         if not issues:
-            rec.update(verified=True, verifier_notes="all claims recomputed from transactions")
-            emit("ok", f"verified: {rec['action']}", {"rec": rec["id"]})
+            if rec["claims"]:
+                rec.update(verification="recomputed", verified=True,
+                           verifier_notes="all claims recomputed from transactions")
+                emit("ok", f"verified (recomputed): {rec['action']}", {"rec": rec["id"]})
+            else:
+                rec.update(verification="evidence_only", verified=True, verifier_notes=EVIDENCE_NOTE)
+                emit("ok", f"verified (evidence only): {rec['action']}", {"rec": rec["id"]})
             kept.append(rec)
             continue
         emit("caught", f"{rec['action']}: {_describe(issues)}", {"rec": rec["id"], "issues": issues})
@@ -59,14 +68,19 @@ def verify_all(recs, df, llm=None, emit=None):
                 rewritten = llm.json(REWRITE_SYSTEM, json.dumps(
                     {"evidence": rec["evidence"], "claims": fixed, "bad_text": rec["text"],
                      "issues": [str(i) for i in issues]}, default=str)).get("text")
-            except (LLMUnavailable, ValueError, AttributeError):
+            except (LLMUnavailable, ValueError, AttributeError, TypeError):
                 rewritten = None
+        if not isinstance(rewritten, str) or not rewritten.strip():
+            rewritten = None
         attempts = ([(rewritten, "LLM rewrite")] if rewritten else []) + [(None, "template")]
         for candidate_text, how in attempts:
             rec["claims"] = fixed
             rec["text"] = candidate_text if candidate_text else template_text(rec)
+            if not candidate_text:
+                rec["model"] = "template"
             if not audit(rec, df):
-                rec.update(verified=True, verifier_notes=f"{notes}; corrected via {how}")
+                rec.update(verified=True, verifier_notes=f"{notes}; corrected via {how}"
+                           + ("; text is deterministic template" if how == "template" else ""))
                 emit("corrected", f"corrected via {how}: {rec['action']}", {"rec": rec["id"]})
                 kept.append(rec)
                 break

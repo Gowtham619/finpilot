@@ -50,3 +50,38 @@ def test_unknown_claim_kind_is_unverifiable(world):
     c = {"kind": "mystery", "value": 5}
     assert V.recompute(c, df) is None
     assert V.check_claim(c, df) == {"ok": False, "actual": None}
+
+
+@pytest.mark.parametrize("claim", [
+    {}, "monthly_cost", None, 5, {"kind": "monthly_cost", "value": 100},
+    {"kind": "monthly_cost", "merchant": "HOTSTAR", "value": "₹5"},
+    {"kind": "monthly_cost", "merchant": "HOTSTAR"},
+    {"kind": "monthly_cost", "merchant": "HOTSTAR", "value": float("nan")},
+    {"kind": "monthly_cost", "merchant": "HOTSTAR", "value": True},
+    {"kind": "txn_amount", "txn_id": None, "value": 1},
+    {"kind": "txn_amount", "txn_id": "abc", "value": 1},
+    {"kind": "txn_amount", "txn_id": [1, 2], "value": 1},
+    {"kind": "month_total", "category": "x", "value": 1},
+])
+def test_malformed_claims_are_unverifiable_not_crashes(world, claim):
+    _, df = world
+    assert V.check_claim(claim, df)["ok"] is False
+    if not isinstance(claim, dict) or claim.get("kind") != "monthly_cost" or "merchant" not in claim:
+        assert V.check_claim(claim, df)["actual"] is None
+    V.recompute(claim, df)
+
+
+def test_ungrounded_suffixes_and_currency_escapes():
+    claims = [{"kind": "monthly_cost", "merchant": "X", "value": 299}]
+    flag = lambda t, ev=None: V.ungrounded_numbers(t, claims, ev or {})
+    assert flag("Save ₹1.5k a month") == [1500.0]
+    assert flag("Save 5 lakh") == [500000.0]
+    assert flag("Save 2 crore") == [20000000.0]
+    assert flag("Save ₹2,000") == [2000.0]
+    assert flag("Save ₹2000") == [2000.0]
+    assert flag("Save ₹60") == [60.0]
+    assert flag("Save ₹1000-2500") == [1000.0, 2500.0]
+    assert flag("Save 1.5k", {"x": 1500}) == []
+    assert flag("in 2026") == []
+    assert flag("over 60 days") == []
+    assert flag("Charged 2026-06-22 and 2026-06.") == []

@@ -20,6 +20,8 @@ from finpilot.llm import LLM
 
 def run(csv_path, mapping_path, llm):
     m = json.load(open(mapping_path))
+    if m.get("label") and not m.get("label_map"):
+        raise ValueError("mapping sets 'label' but has no 'label_map' (dataset label -> FinPilot category)")
     raw = pd.read_csv(csv_path)
     df = pd.DataFrame({"date": pd.to_datetime(raw[m["date"]], errors="coerce"),
                        "description": raw[m["description"]].astype(str),

@@ -95,15 +95,20 @@ def _daily_net(df, start, end):
     return sub.groupby(sub["date"].dt.normalize())["amount"].sum().reindex(days, fill_value=0.0).to_numpy()
 
 
+def forecast_origins(df, origins=3):
+    """Monthly forecast origins shared by eval_forecast and the LLM-only ablation: the first day
+    of each of the last `origins` calendar months of data."""
+    last_month = df["date"].max().to_period("M")
+    return [(last_month - k).to_timestamp() for k in range(origins)]
+
+
 def eval_forecast(persona, origins=3):
     df = _with_truth(persona)
-    last_month = df["date"].max().to_period("M")
     months = df["date"].dt.to_period("M").nunique()
     monthly_spend = float(-df.loc[df["amount"] < 0, "amount"].sum() / months)
     names = ("model",) + BASELINES
     acc = {n: {"ape": [], "mape": [], "mae": [], "pin": [], "cov": []} for n in names}
-    for k in range(origins):
-        cutoff = (last_month - k).to_timestamp()
+    for cutoff in forecast_origins(df, origins):
         end = (cutoff + pd.offsets.MonthEnd(0)).normalize()
         train = df[df["date"] < cutoff]
         model, bal0 = F.fit(train), F.current_balance(train, persona.opening_balance)
@@ -205,8 +210,12 @@ METHODOLOGY = [
     "Calibration origins overlap (7-day stride, 30-day windows) and sit mid-month rather than month-aligned, so the effective n is far smaller than n.",
     "A flat-balance forecast scores exactly 1.0 on net-flow APE, so that metric is reported only for completeness.",
     "Pinball loss and month-end MAE are divided by the persona's mean monthly spend; baselines are point forecasts used as all three quantiles.",
-    "The advice backtest assumes the user complied with every recommendation and counts only recurring-cancel and category-excess savings, so it is an optimistic upper bound on avoided spend, not a forecast of behaviour.",
-    "The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this favors neither side strongly but is a design choice.",
+    "Advice backtest: the headline is cancel savings, the deterministic post-cutoff spend at merchants the system recommended cancelling. It assumes the user cancelled every flagged subscription on the cutoff day.",
+    "Backtest excess is a separate, noisy upper bound: for each flagged category spike, post-cutoff monthly spend above the pre-cutoff median baseline (prorated by days present for partial months, net of cancelled merchants in that category to avoid double counting). It nets nothing off for months below baseline, so it only ever adds, and it is not a forecast of behaviour.",
+    "Each persona has only 1-2 cancellations, so cancel precision and recall (reported as k/n counts) are anecdotal.",
+    "The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this is a design choice.",
+    "The LLM-only advice is audited with no engine evidence, so any derived number in its text that is not in its claims counts as ungrounded; this inflates the gap relative to the hybrid, whose recommendations carry engine evidence.",
+    "The LLM-only forecast uses the same 3 monthly origins per persona as the model (monthly net-flow history before the origin -> that month's net flow). A net-flow APE of 1.0 equals the flat-balance forecast.",
     "The ablation is a single run at temperature 0 over 3 synthetic personas (only when run with an LLM); differences are indicative, not statistically tested.",
 ]
 
@@ -239,20 +248,37 @@ def render_md(res):
     rows += [f"| {b['range']} | {b['count']} | {b['mean_pred'] if b['mean_pred'] is not None else '-'} | "
              f"{b['observed'] if b['observed'] is not None else '-'} |" for b in cal["bins"]]
     ab = res.get("ablation")
+    g0 = res.get("grounding")
     rows += ["", "## Ablation: LLM-only vs rules-only vs hybrid"]
     if ab:
         ac = ab["categorization"]
+        la = ab["advice"]["llm_only"]
+        fa = ab["forecast"]["llm_only"]
+        caught = (f"{round(g0['first_pass_caught'] / max(g0['recs'], 1), 4)} of {g0['recs']} recs caught (priya only); "
+                  f"final output 0 flagged by construction (only recs passing audit are kept)") if g0 else "n/a (--no-llm)"
         rows += ["| Task | LLM-only | Rules-only | Hybrid (FinPilot) |", "|---|---|---|---|",
-                 f"| Categorization accuracy | {ac['llm_only']['accuracy']} | {ac['rules_only']['accuracy']} | {ac['hybrid']['accuracy']} |",
-                 f"| Forecast net-flow APE | {ab['forecast']['llm_only']['net_flow_ape']} | - | {_fmt(f['model']['net_flow_ape'])} |",
-                 f"| Advice with ungrounded/incorrect numbers | {ab['advice']['llm_only']['hallucination_rate']} | - | 0 after verifier (see grounding) |"]
+                 f"| Categorization accuracy (n personas: {ac['hybrid']['n_used']}) | {ac['llm_only']['accuracy']} | {ac['rules_only']['accuracy']} | {ac['hybrid']['accuracy']} |",
+                 f"| Forecast net-flow APE ({fa.get('n_used')} origins; 1.0 = balance stays flat) | {fa['net_flow_ape']} | flat-balance: {_fmt(f['flat_balance']['net_flow_ape'])} | model: {_fmt(f['model']['net_flow_ape'])} |",
+                 f"| LLM-only: share of recs with ungrounded/incorrect numbers ({la['recs']} recs) | {la['hallucination_rate']} | - | - |",
+                 f"| FinPilot hybrid: first-pass share caught by the Verifier | - | - | {caught} |"]
     else:
         rows.append("n/a (--no-llm)")
     bt = res.get("backtest")
     if bt:
-        rows += ["", "## Advice backtest (last 90 days, assumes advice followed; upper bound)",
-                 "| Persona | Potential savings | % of spend | Cancel precision |", "|---|---|---|---|"]
-        rows += [f"| {n} | \u20b9{b['potential_savings']:,.0f} | {b['pct_of_spend'] * 100:.1f}% | {b['cancel_precision']} |" for n, b in bt.items()]
+        rows += ["", "## Advice backtest (last 90 days; assumes every recommendation was followed)",
+                 "Headline is cancel savings (deterministic). Excess is an estimated excess over median (noisy upper bound), shown separately.", "",
+                 "| Persona | Cancel savings (headline) | % of spend | Estimated excess over median (noisy upper bound) | Cancelled (correct/total) | Unused in truth | Recall |",
+                 "|---|---|---|---|---|---|---|"]
+        rows += [f"| {n} | \u20b9{b['cancel_savings']:,.0f} | {b['cancel_pct_of_spend'] * 100:.1f}% | \u20b9{b['excess_savings']:,.0f} "
+                 f"({b['excess_pct_of_spend'] * 100:.1f}%) | {b['n_correct']}/{b['n_cancelled']} | {b['n_unused_truth']} | "
+                 f"{b['n_correct']}/{b['n_unused_truth']} |" for n, b in bt.items()]
+    rows += ["", "## Real-data check"]
+    rd = res.get("real_data")
+    if isinstance(rd, dict):
+        rows.append("REAL data (not synthetic), from eval/real_results.json:")
+        rows += [f"- {k}: {v}" for k, v in rd.items()]
+    else:
+        rows.append(rd or "not run: no dataset supplied (see eval/real_data.py)")
     g = res.get("grounding")
     rows += ["", "## Grounding", (f"first-pass grounding rate {g['first_pass_grounding_rate']} "
                                   f"({g['first_pass_caught']} caught of {g['recs']}), final verified {g['final_verified']}" if g else "n/a (--no-llm)"),
@@ -284,6 +310,8 @@ def main(argv=None):
     from eval import backtest  # lazy: backtest/ablation import from this module
     res["backtest"] = {n: backtest.run(p) for n, p in personas.items()}
     res["ablation"] = None
+    rr = OUT / "real_results.json"
+    res["real_data"] = json.loads(rr.read_text()) if rr.exists() else "not run: no dataset supplied (see eval/real_data.py)"
     if use_llm:
         from eval import ablation
         res["ablation"] = ablation.run(personas, llm)

@@ -44,12 +44,17 @@ Event: balance falls >10% below its starting level within 30 days. n=102 (overla
 ## Ablation: LLM-only vs rules-only vs hybrid
 n/a (--no-llm)
 
-## Advice backtest (last 90 days, assumes advice followed; upper bound)
-| Persona | Potential savings | % of spend | Cancel precision |
-|---|---|---|---|
-| priya | ₹8,496 | 5.0% | 1.0 |
-| arjun | ₹18,813 | 12.4% | 1.0 |
-| meera | ₹3,612 | 2.3% | 1.0 |
+## Advice backtest (last 90 days; assumes every recommendation was followed)
+Headline is cancel savings (deterministic). Excess is an estimated excess over median (noisy upper bound), shown separately.
+
+| Persona | Cancel savings (headline) | % of spend | Estimated excess over median (noisy upper bound) | Cancelled (correct/total) | Unused in truth | Recall |
+|---|---|---|---|---|---|---|
+| priya | ₹5,397 | 3.1% | ₹3,528 (2.1%) | 2/2 | 2 | 2/2 |
+| arjun | ₹5,397 | 3.5% | ₹13,754 (9.1%) | 2/2 | 2 | 2/2 |
+| meera | ₹897 | 0.6% | ₹2,976 (1.9%) | 1/1 | 1 | 1/1 |
+
+## Real-data check
+not run: no dataset supplied (see eval/real_data.py)
 
 ## Grounding
 n/a (--no-llm)
@@ -64,6 +69,10 @@ n/a (--no-llm)
 - Calibration origins overlap (7-day stride, 30-day windows) and sit mid-month rather than month-aligned, so the effective n is far smaller than n.
 - A flat-balance forecast scores exactly 1.0 on net-flow APE, so that metric is reported only for completeness.
 - Pinball loss and month-end MAE are divided by the persona's mean monthly spend; baselines are point forecasts used as all three quantiles.
-- The advice backtest assumes the user complied with every recommendation and counts only recurring-cancel and category-excess savings, so it is an optimistic upper bound on avoided spend, not a forecast of behaviour.
-- The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this favors neither side strongly but is a design choice.
+- Advice backtest: the headline is cancel savings, the deterministic post-cutoff spend at merchants the system recommended cancelling. It assumes the user cancelled every flagged subscription on the cutoff day.
+- Backtest excess is a separate, noisy upper bound: for each flagged category spike, post-cutoff monthly spend above the pre-cutoff median baseline (prorated by days present for partial months, net of cancelled merchants in that category to avoid double counting). It nets nothing off for months below baseline, so it only ever adds, and it is not a forecast of behaviour.
+- Each persona has only 1-2 cancellations, so cancel precision and recall (reported as k/n counts) are anecdotal.
+- The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this is a design choice.
+- The LLM-only advice is audited with no engine evidence, so any derived number in its text that is not in its claims counts as ungrounded; this inflates the gap relative to the hybrid, whose recommendations carry engine evidence.
+- The LLM-only forecast uses the same 3 monthly origins per persona as the model (monthly net-flow history before the origin -> that month's net flow). A net-flow APE of 1.0 equals the flat-balance forecast.
 - The ablation is a single run at temperature 0 over 3 synthetic personas (only when run with an LLM); differences are indicative, not statistically tested.

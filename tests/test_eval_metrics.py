@@ -53,5 +53,5 @@ def test_run_eval_no_llm_smoke(tmp_path, monkeypatch):
     assert (tmp_path / "results.json").exists()
     assert res.get("ablation") is None
     bt = res["backtest"]
-    assert set(bt) == set(res["personas"]) and all(b["potential_savings"] > 0 for b in bt.values())
-    assert "Advice backtest" in md and "n/a (--no-llm)" in md
+    assert set(bt) == set(res["personas"]) and all(b["cancel_savings"] > 0 and "excess_savings" in b for b in bt.values())
+    assert "Advice backtest" in md and "Real-data check" in md and "not run: no dataset" in md and "n/a (--no-llm)" in md

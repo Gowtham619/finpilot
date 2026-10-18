@@ -472,8 +472,12 @@
     "Calibration origins overlap (7-day stride, 30-day windows) and sit mid-month rather than month-aligned, so the effective n is far smaller than n.",
     "A flat-balance forecast scores exactly 1.0 on net-flow APE, so that metric is reported only for completeness.",
     "Pinball loss and month-end MAE are divided by the persona's mean monthly spend; baselines are point forecasts used as all three quantiles.",
-    "The advice backtest assumes the user complied with every recommendation and counts only recurring-cancel and category-excess savings, so it is an optimistic upper bound on avoided spend, not a forecast of behaviour.",
-    "The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this favors neither side strongly but is a design choice.",
+    "Advice backtest: the headline is cancel savings, the deterministic post-cutoff spend at merchants the system recommended cancelling. It assumes the user cancelled every flagged subscription on the cutoff day.",
+    "Backtest excess is a separate, noisy upper bound: for each flagged category spike, post-cutoff monthly spend above the pre-cutoff median baseline (prorated by days present for partial months, net of cancelled merchants in that category to avoid double counting). It nets nothing off for months below baseline, so it only ever adds, and it is not a forecast of behaviour.",
+    "Each persona has only 1-2 cancellations, so cancel precision and recall (reported as k/n counts) are anecdotal.",
+    "The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this is a design choice.",
+    "The LLM-only advice is audited with no engine evidence, so any derived number in its text that is not in its claims counts as ungrounded; this inflates the gap relative to the hybrid, whose recommendations carry engine evidence.",
+    "The LLM-only forecast uses the same 3 monthly origins per persona as the model (monthly net-flow history before the origin -> that month's net flow). A net-flow APE of 1.0 equals the flat-balance forecast.",
     "The ablation is a single run at temperature 0 over 3 synthetic personas (only when run with an LLM); differences are indicative, not statistically tested."
   ],
   "grounding": null,
@@ -482,70 +486,100 @@
       "cutoff": "2026-07-02",
       "followed": [
         {
-          "action": "Cut back on shopping",
-          "saved": 3098.5
-        },
-        {
           "action": "Cancel CULT FIT GYM",
+          "kind": "cancel",
           "saved": 4500.0
         },
         {
           "action": "Cancel HOTSTAR",
+          "kind": "cancel",
           "saved": 897.0
+        },
+        {
+          "action": "Cut back on shopping",
+          "kind": "category_excess",
+          "saved": 3527.78
         }
       ],
-      "potential_savings": 8495.5,
-      "pct_of_spend": 0.0496,
-      "cancel_precision": 1.0
+      "cancel_savings": 5397.0,
+      "cancel_pct_of_spend": 0.0315,
+      "excess_savings": 3527.78,
+      "excess_pct_of_spend": 0.0206,
+      "n_cancelled": 2,
+      "n_unused_truth": 2,
+      "n_correct": 2,
+      "cancel_precision": 1.0,
+      "cancel_recall": 1.0
     },
     "arjun": {
       "cutoff": "2026-07-02",
       "followed": [
         {
-          "action": "Cut back on dining",
-          "saved": 9583.51
-        },
-        {
-          "action": "Cut back on health",
-          "saved": 1413.81
-        },
-        {
-          "action": "Cut back on food_delivery",
-          "saved": 2418.98
-        },
-        {
           "action": "Cancel CULT FIT GYM",
+          "kind": "cancel",
           "saved": 4500.0
         },
         {
           "action": "Cancel HOTSTAR",
+          "kind": "cancel",
           "saved": 897.0
+        },
+        {
+          "action": "Cut back on dining",
+          "kind": "category_excess",
+          "saved": 9685.45
+        },
+        {
+          "action": "Cut back on health",
+          "kind": "category_excess",
+          "saved": 1413.81
+        },
+        {
+          "action": "Cut back on food_delivery",
+          "kind": "category_excess",
+          "saved": 2654.6
         }
       ],
-      "potential_savings": 18813.3,
-      "pct_of_spend": 0.1239,
-      "cancel_precision": 1.0
+      "cancel_savings": 5397.0,
+      "cancel_pct_of_spend": 0.0355,
+      "excess_savings": 13753.87,
+      "excess_pct_of_spend": 0.0906,
+      "n_cancelled": 2,
+      "n_unused_truth": 2,
+      "n_correct": 2,
+      "cancel_precision": 1.0,
+      "cancel_recall": 1.0
     },
     "meera": {
       "cutoff": "2026-07-02",
       "followed": [
         {
+          "action": "Cancel HOTSTAR",
+          "kind": "cancel",
+          "saved": 897.0
+        },
+        {
           "action": "Cut back on dining",
-          "saved": 439.02
+          "kind": "category_excess",
+          "saved": 670.12
         },
         {
           "action": "Cut back on health",
-          "saved": 2276.47
-        },
-        {
-          "action": "Cancel HOTSTAR",
-          "saved": 897.0
+          "kind": "category_excess",
+          "saved": 2305.91
         }
       ],
-      "potential_savings": 3612.49,
-      "pct_of_spend": 0.0227,
-      "cancel_precision": 1.0
+      "cancel_savings": 897.0,
+      "cancel_pct_of_spend": 0.0056,
+      "excess_savings": 2976.03,
+      "excess_pct_of_spend": 0.0187,
+      "n_cancelled": 1,
+      "n_unused_truth": 1,
+      "n_correct": 1,
+      "cancel_precision": 1.0,
+      "cancel_recall": 1.0
     }
   },
-  "ablation": null
+  "ablation": null,
+  "real_data": "not run: no dataset supplied (see eval/real_data.py)"
 }

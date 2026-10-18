@@ -22,10 +22,13 @@ def current_balance(df, opening):
 
 
 def fit(df, window_days=90) -> Model:
+    if df is None or len(df) == 0:
+        raise ValueError("need at least 1 day of history")
     rec = detect_recurring(df)
     rec_m = {r["merchant"] for r in rec}
     end = df["date"].max().normalize()
-    idx = pd.date_range(end - pd.Timedelta(days=window_days - 1), end)
+    start = max(end - pd.Timedelta(days=window_days - 1), df["date"].min().normalize())
+    idx = pd.date_range(start, end)
     disc = df[(~df["merchant"].isin(rec_m)) & (df["amount"] < 0) & (df["date"] >= idx[0])]
     cats = sorted(disc["category"].unique())
     if cats:
@@ -91,7 +94,10 @@ def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts
             fixed[dates.get_loc(d)] += a
     cuts = cuts or {}
     scale = np.array([1.0 - cuts.get(c, 0.0) for c in model.cats])
-    by_wd = {w: np.where(model.weekdays == w)[0] for w in range(7)}
+    by_wd = {}
+    for w in range(7):
+        b = np.where(model.weekdays == w)[0]
+        by_wd[w] = b if len(b) else np.arange(len(model.weekdays))  # sparse history fallback
     rows = np.empty((n, horizon), dtype=int)
     for j, d in enumerate(dates):  # weekday-matched bootstrap of observed days
         rows[:, j] = rng.choice(by_wd[d.weekday()], size=n)
@@ -103,9 +109,11 @@ def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts
 def goal_status(model, balance, target, deadline, n=1000, seed=0, max_horizon=365):
     deadline = pd.Timestamp(deadline).normalize()
     horizon = max(1, (deadline - model.last_date).days)
-    r = monte_carlo(model, balance, min(horizon, max_horizon), n, seed)
+    eff = min(horizon, max_horizon)
+    r = monte_carlo(model, balance, eff, n, seed)
     p_met = float((r.paths[:, -1] >= target).mean())
     far = monte_carlo(model, balance, max_horizon, n, seed)
     hit = np.where(far.p50 >= target)[0]
     return {"p_met": round(p_met, 3), "shortfall_p50": round(float(target - r.end_p50), 2),
-            "eta": str(far.dates[hit[0]].date()) if len(hit) else None, "horizon": int(horizon)}
+            "eta": str(far.dates[hit[0]].date()) if len(hit) else None, "horizon": int(eff),
+            "capped": bool(horizon > max_horizon)}

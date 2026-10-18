@@ -102,3 +102,50 @@ def test_goal_status_past_deadline():
     bal = F.current_balance(df, p.opening_balance)
     g = F.goal_status(m, bal, bal - 1000, m.last_date - pd.Timedelta(days=10))
     assert g["horizon"] == 1 and 0.0 <= g["p_met"] <= 1.0
+
+
+def test_goal_status_capped_for_far_deadline():
+    p, df = prep(seed=0)
+    m = F.fit(df)
+    bal = F.current_balance(df, p.opening_balance)
+    g = F.goal_status(m, bal, bal, m.last_date + pd.Timedelta(days=730))
+    assert g["capped"] is True and g["horizon"] == 365
+    g2 = F.goal_status(m, bal, bal, m.last_date + pd.Timedelta(days=60))
+    assert g2["capped"] is False and g2["horizon"] == 60
+
+
+def test_common_random_numbers():
+    p, df = prep(seed=0)
+    m = F.fit(df)
+    bal = F.current_balance(df, p.opening_balance)
+    base = F.monte_carlo(m, bal, 30, 300, seed=3)
+    assert np.array_equal(base.paths, F.monte_carlo(m, bal, 30, 300, seed=3).paths)
+    d = m.last_date + pd.Timedelta(days=4)
+    flow = F.monte_carlo(m, bal, 30, 300, seed=3, extra_flows=[(d, -5000.0)])
+    diff = flow.paths - base.paths
+    expected = np.where(np.arange(30) >= 3, -5000.0, 0.0)
+    assert np.allclose(diff, expected[None, :])
+    # cuts change only discretionary scale: same draws, so cut paths dominate pathwise
+    cut = F.monte_carlo(m, bal, 30, 300, seed=3, cuts={c: 0.5 for c in m.cats})
+    assert (cut.paths >= base.paths - 1e-9).all()
+
+
+def test_short_history_fit():
+    p, df = prep(seed=0)
+    short = df[df.date >= df.date.max().normalize() - pd.Timedelta(days=19)]
+    m = F.fit(short)
+    nd = (short.date.max().normalize() - short.date.min().normalize()).days + 1
+    assert m.daily.shape[0] == nd and nd >= 15
+    true_mean = -short[(short.amount < 0) & (~short.merchant.isin({r["merchant"] for r in m.recurring}))].amount.sum() / nd
+    assert abs(m.daily.sum(axis=1).mean() - true_mean) < 1e-6
+    tiny = df[df.date >= df.date.max().normalize() - pd.Timedelta(days=2)]
+    mt = F.fit(tiny)
+    r = F.monte_carlo(mt, 1000.0, 15, 50)
+    assert r.paths.shape == (50, 15) and np.isfinite(r.paths).all()
+
+
+def test_empty_df_raises():
+    import pytest
+    _, df = prep(seed=0)
+    with pytest.raises(ValueError):
+        F.fit(df.iloc[0:0])

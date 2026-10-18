@@ -22,6 +22,43 @@ def test_zero_purchase_has_zero_delta(world):
     assert r["delta_p_overdraft"] == 0 and r["delta_end_p50"] == 0
 
 
+def test_small_purchase_delta_is_exact_outflow(world):
+    m, bal = world
+    r = S.simulate_purchase(m, bal, 1000, m.last_date + pd.Timedelta(days=3))
+    assert r["delta_end_p50"] == -1000
+    assert r["ignored_flows"] == 0
+
+
+def test_out_of_window_purchase_raises(world):
+    m, bal = world
+    with pytest.raises(ValueError, match="outside the forecast window"):
+        S.simulate_purchase(m, bal, 1000, m.last_date + pd.Timedelta(days=200))
+    with pytest.raises(ValueError, match="outside the forecast window"):
+        S.simulate_purchase(m, bal, 1000, m.last_date)
+
+
+def test_installments_beyond_horizon_counted(world):
+    m, bal = world
+    r = S.simulate_purchase(m, bal, 3000, m.last_date + pd.Timedelta(days=50),
+                            horizon=60, financed_months=3)
+    assert r["ignored_flows"] == 2
+
+
+def test_best_date_excludes_out_of_window(world):
+    m, bal = world
+    cands = [m.last_date + pd.Timedelta(days=d) for d in (0, 5, 500)]
+    out = S.best_date(m, bal, 1000, cands)
+    assert [o["date"] for o in out] == [str((m.last_date + pd.Timedelta(days=5)).date())]
+    assert S.best_date(m, bal, 1000, [m.last_date + pd.Timedelta(days=500)]) == []
+
+
+def test_duel_reports_ignored_flows(world):
+    m, bal = world
+    far = S.purchase_flows(1000, m.last_date + pd.Timedelta(days=500))
+    r = S.duel(m, bal, {"name": "A", "flows": far, "cuts": {}}, {"name": "B", "flows": [], "cuts": {}})
+    assert r["ignored_flows"] == 1
+
+
 def test_big_purchase_hurts(world):
     m, bal = world
     r = S.simulate_purchase(m, bal, bal * 1.5, m.last_date + pd.Timedelta(days=3))
@@ -53,21 +90,27 @@ def test_best_date_sorted(world):
 def test_cheapest_fix_no_cut_needed(world):
     m, bal = world
     fix = S.cheapest_fix(m, bal, [])
-    assert fix is None or fix["cut_pct"] == 0 or fix["p_overdraft"] <= 0.10
+    assert fix["category"] is None and fix["cut_pct"] == 0
+    assert fix["p_overdraft"] <= 0.10 and fix["est_monthly_saving"] == 0.0
 
 
 def test_cheapest_fix_result_meets_target(world):
     m, bal = world
-    flows = S.purchase_flows(bal * 0.9, m.last_date + pd.Timedelta(days=3))
+    flows = S.purchase_flows(bal * 1.1, m.last_date + pd.Timedelta(days=3))
+    base = F.monte_carlo(m, bal, 60, 1000, 0, extra_flows=flows)
+    assert base.p_overdraft > 0.10
     fix = S.cheapest_fix(m, bal, flows)
-    assert fix is None or fix["p_overdraft"] <= 0.10
+    assert fix is not None
+    assert fix["cut_pct"] > 0 and fix["p_overdraft"] <= 0.10
+    assert fix["est_monthly_saving"] > 0
 
 
 def test_cheapest_fix_empty_cats(world):
     m, bal = world
-    from dataclasses import replace, is_dataclass
+    from dataclasses import replace
+    m2 = replace(m, cats=[])
+    assert m2.cats == []
     flows = S.purchase_flows(bal * 5, m.last_date + pd.Timedelta(days=3))
-    m2 = replace(m, cats=[]) if is_dataclass(m) else m
     assert S.cheapest_fix(m2, bal, flows) is None
 
 

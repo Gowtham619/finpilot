@@ -15,20 +15,39 @@ def purchase_flows(amount, on, financed_months=0):
     return [(on + pd.DateOffset(months=k), -part) for k in range(financed_months)]
 
 
+def _window(model, horizon):
+    start = model.last_date + pd.Timedelta(days=1)
+    return start, start + pd.Timedelta(days=horizon - 1)
+
+
+def _count_ignored(model, horizon, flows):
+    start, end = _window(model, horizon)
+    return sum(1 for d, _ in flows if not (start <= pd.Timestamp(d).normalize() <= end))
+
+
 def simulate_purchase(model, balance, amount, on, horizon=60, n=1000, seed=0, financed_months=0):
     flows = purchase_flows(amount, on, financed_months)
+    start, end = _window(model, horizon)
+    if not (start <= flows[0][0] <= end):
+        d = flows[0][0].date()
+        raise ValueError(f"purchase date {d} is outside the forecast window "
+                         f"{start.date()}..{end.date()}")
     base = monte_carlo(model, balance, horizon, n, seed)
     alt = monte_carlo(model, balance, horizon, n, seed, extra_flows=flows)
     b, a = base.summary(), alt.summary()
     return {"amount": float(amount), "date": str(pd.Timestamp(on).date()),
             "baseline": b, "with_purchase": a,
+            "ignored_flows": _count_ignored(model, horizon, flows),
             "delta_p_overdraft": round(a["p_overdraft"] - b["p_overdraft"], 3),
             "delta_end_p50": round(a["end_p50"] - b["end_p50"], 2)}
 
 
 def best_date(model, balance, amount, candidates, horizon=60, n=1000, seed=0):
     out = []
+    start, end = _window(model, horizon)
     for c in candidates:
+        if not (start <= pd.Timestamp(c).normalize() <= end):
+            continue
         r = monte_carlo(model, balance, horizon, n, seed, extra_flows=purchase_flows(amount, c))
         out.append({"date": str(pd.Timestamp(c).date()), **r.summary()})
     return sorted(out, key=lambda x: (x["p_overdraft"], -x["floor_p50"]))
@@ -36,7 +55,10 @@ def best_date(model, balance, amount, candidates, horizon=60, n=1000, seed=0):
 
 def cheapest_fix(model, balance, extra_flows, target_p=0.10, horizon=60, n=1000, seed=0):
     """Smallest discretionary cut (single top category, or uniform) that brings
-    P(overdraft) under target_p. Cheapest = lowest monthly saving required."""
+    P(overdraft) under target_p. Cheapest = lowest monthly saving required.
+
+    Returns None when no option reaches the target or there are no
+    discretionary categories to cut."""
     base = monte_carlo(model, balance, horizon, n, seed, extra_flows=extra_flows)
     if base.p_overdraft <= target_p:
         return {"category": None, "cut_pct": 0, "p_overdraft": round(base.p_overdraft, 3),
@@ -88,4 +110,6 @@ def duel(model, balance, a, b, horizon=90, n=1000, seed=0):
                   f"₹{w['end_p50']:,.0f} vs ₹{l['end_p50']:,.0f}.")
     return {"a": {"name": a["name"], "summary": sa, "bands": _bands(ra)},
             "b": {"name": b["name"], "summary": sb, "bands": _bands(rb)},
-            "winner": winner, "reason": reason, "horizon": horizon}
+            "winner": winner, "reason": reason, "horizon": horizon,
+            "ignored_flows": (_count_ignored(model, horizon, a["flows"])
+                              + _count_ignored(model, horizon, b["flows"]))}

@@ -130,3 +130,71 @@ def test_duel_tie(world):
     b = {"name": "B", "flows": [], "cuts": {}}
     r = S.duel(m, bal, a, b)
     assert r["winner"] == "tie"
+
+
+# ---- final review fixes: C3 tie-breaks, C5 cut clamp, I1 financed best_date ----
+import numpy as np  # noqa: E402
+from finpilot.engines.forecast import Model  # noqa: E402
+
+
+def _flat_model(days=28):
+    """Deterministic model: one category spending 100 every day, no recurring flows."""
+    last = pd.Timestamp("2026-09-30")
+    idx = pd.date_range(last - pd.Timedelta(days=days - 1), last)
+    return Model([], ["food"], np.full((days, 1), 100.0), np.asarray(idx.weekday), last)
+
+
+def test_duel_same_end_decided_by_lowest_balance():
+    m = _flat_model()
+    d1 = m.last_date + pd.Timedelta(days=1)
+    a = {"name": "Buy now", "flows": S.purchase_flows(5000, d1), "cuts": {}}
+    b = {"name": "Wait", "flows": S.purchase_flows(5000, m.last_date + pd.Timedelta(days=30)), "cuts": {}}
+    r = S.duel(m, 20000, a, b, horizon=30)
+    assert r["a"]["summary"]["end_p50"] == r["b"]["summary"]["end_p50"]
+    assert r["winner"] == "b" and "lowest balance" in r["reason"]
+    assert "₹12,000" in r["reason"] and "₹12,000" in r["reason"]
+
+
+def test_duel_same_end_and_floor_decided_by_average():
+    m = _flat_model()
+    # both purchases happen before the balance bottoms out at the horizon end, so floor and end
+    # are identical; the earlier purchase leaves a lower balance on average
+    a = {"name": "Early", "flows": S.purchase_flows(1000, m.last_date + pd.Timedelta(days=2)), "cuts": {}}
+    b = {"name": "Late", "flows": S.purchase_flows(1000, m.last_date + pd.Timedelta(days=20)), "cuts": {}}
+    r = S.duel(m, 20000, a, b, horizon=30)
+    sa, sb = r["a"]["summary"], r["b"]["summary"]
+    assert sa["end_p50"] == sb["end_p50"] and sa["floor_p50"] == sb["floor_p50"]
+    assert r["winner"] == "b" and "average balance" in r["reason"]
+    assert f"₹{sb['avg_p50']:,.0f}" in r["reason"] and f"₹{sa['avg_p50']:,.0f}" in r["reason"]
+
+
+def test_duel_true_tie_prints_numbers():
+    m = _flat_model()
+    r = S.duel(m, 20000, {"name": "A", "flows": [], "cuts": {}}, {"name": "B", "flows": [], "cuts": {}}, horizon=30)
+    assert r["winner"] == "tie"
+    assert "0%" in r["reason"] and "₹17,000" in r["reason"]
+
+
+def test_duel_negative_balances_are_worded():
+    m = _flat_model()
+    r = S.duel(m, 1000, {"name": "A", "flows": [], "cuts": {}},
+               {"name": "B", "flows": S.purchase_flows(500, m.last_date + pd.Timedelta(days=1)), "cuts": {}},
+               horizon=30)
+    assert "overdrawn by ₹" in r["reason"] and "₹-" not in r["reason"]
+
+
+@pytest.mark.parametrize("cut", [5, -3, 1.0])
+def test_monte_carlo_clamps_cuts(cut):
+    m = _flat_model()
+    r = F.monte_carlo(m, 1000, 10, 50, 0, cuts={"food": cut})
+    expected = 1000 - 100 * 10 * min(max(1 - cut, 0), 1)
+    assert r.p50[-1] == pytest.approx(expected)
+
+
+def test_best_date_simulates_installments():
+    m = _flat_model()
+    d1 = m.last_date + pd.Timedelta(days=1)
+    lump = S.best_date(m, 10000, 9000, [d1], horizon=35)
+    fin = S.best_date(m, 10000, 9000, [d1], horizon=35, financed_months=3)
+    assert lump[0]["p_overdraft"] == 1.0  # 9000 at once: overdrawn by day 11
+    assert fin[0]["p_overdraft"] == 0.0 and fin[0]["floor_p50"] == 500.0  # two 3000 installments in window

@@ -119,11 +119,11 @@ def create_app():
 
     @app.post("/api/afford/{profile}")
     def afford(body: dict, profile: str = Depends(valid_profile)):
-        return _ask(profile, {"type": "afford", **body})
+        return _ask(profile, {**body, "type": "afford"})
 
     @app.post("/api/duel/{profile}")
     def duel(body: dict, profile: str = Depends(valid_profile)):
-        return _ask(profile, {"type": "duel", **body})
+        return _ask(profile, {**body, "type": "duel"})
 
     @app.post("/api/chat/{profile}")
     def chat(body: dict, profile: str = Depends(valid_profile)):

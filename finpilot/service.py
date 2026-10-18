@@ -146,6 +146,23 @@ def _flow_ok(opt_name, amount, date, months, start, end):
                          f"{start.date()}..{end.date()}")
 
 
+def _cuts(v, what):
+    """{category: fraction in [0, 1]}; anything else is a ValueError (HTTP 400)."""
+    if v is None:
+        return {}
+    if not isinstance(v, dict):
+        raise ValueError(f"{what} cuts must be an object mapping a category to a fraction between 0 and 1")
+    from .config import CATEGORIES
+    out = {}
+    for k, x in v.items():
+        if k not in CATEGORIES:
+            raise ValueError(f"{what} cuts: unknown category {k!r}")
+        if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) or not 0 <= x <= 1:
+            raise ValueError(f"{what} cuts: {k} must be a number between 0 and 1")
+        out[k] = float(x)
+    return out
+
+
 def _months(o):
     try:
         return int(o.get("financed_months") or 0)
@@ -182,6 +199,7 @@ def request(profile, req):
                 raise ValueError(f"option {k} amount must not be negative")
             o["date"] = _norm_date(o["date"], f"option {k} date") if o.get("date") else d0
             o["financed_months"] = _months(o)
+            o["cuts"] = _cuts(o.get("cuts"), f"option {k}")
             try:
                 raw_h = req.get("horizon", 90)
                 if isinstance(raw_h, (float, bool)) and not (isinstance(raw_h, float) and raw_h.is_integer()):

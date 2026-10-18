@@ -11,8 +11,14 @@ Tabs in the UI: **Dashboard, Can I afford...?, Decision duel, Recommendations, G
 0:25  Dashboard tab: spend chart, forecast fan chart (p10/p50/p90), KPIs, and the Findings list
       (duplicate Amazon charge, large charge, category spikes, subscriptions).
 0:35  Recommendations tab: open "Why?" on "Cancel HOTSTAR" -> finding ids, evidence JSON, verifier note.
-0:45  Decision duel tab: Option A "Buy now" (e.g. 80000) vs Option B "Wait 2 months" (e.g. 80000 on a
-      date two months out). Click "Run both futures": two fan charts and a winner with numbers.
+0:45  Decision duel tab: Option A "Buy now", amount 80000, date empty (= the day after the data ends,
+      2026-10-01 for the personas) vs Option B "Wait 2 months", amount 80000, date 2026-12-01.
+      Click "Run both futures": two fan charts and a winner with numbers. For priya (no-LLM run) the
+      app prints: "Wait 2 months wins on lowest balance: overdraft risk 0% vs 0%, median balance in
+      90 days ₹32,993 vs ₹32,993, median lowest balance ₹32,993 vs ₹22,082." Say it plainly: the
+      same ₹80,000 leaves within the 90 days either way, so the end balance is identical; waiting
+      keeps about ₹11,000 more cushion at the low point. (arjun: waiting wins on overdraft risk,
+      19% vs 97%; meera: waiting wins on lowest balance, ₹137,636 vs ₹103,171.)
 0:55  Open the README "Self-evaluation" section: show the forecast-vs-baselines table and the honest
       reading under it (and the ablation table if `make eval` has been run with a key).
 ```

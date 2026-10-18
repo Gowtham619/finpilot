@@ -107,16 +107,42 @@ def matches(n, a):
     return abs(n - a) <= max(1.0, 0.01 * abs(a))
 
 
+_PCT_KEY = re.compile(r"pct|percent|share|rate", re.I)
+
+
+def _keyed_numbers(obj, key=""):
+    if isinstance(obj, bool):
+        return
+    if isinstance(obj, (int, float)):
+        yield key, float(obj)
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _keyed_numbers(v, str(k))
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _keyed_numbers(v, key)
+
+
 def ungrounded_numbers(text, claims, evidence):
     """Numbers in text that match no claim value or evidence number. Exempt (not checked): ISO dates,
     bare 4-digit years 1990-2100, and BARE numbers under 10 or in ALLOWED_CONSTANTS. A number followed
-    by '%' or preceded by a currency token (₹, Rs, INR, $, USD) is always checked."""
+    by '%' or preceded by a currency token (₹, Rs, INR, $, USD) is always checked, and a percentage
+    must match a percent-like value: a probability/fraction in [0, 1] times 100, a pct_change claim, or
+    an evidence value whose key names a percentage (pct, percent, share, rate)."""
     vals = [c.get("value") for c in claims if isinstance(c, dict)]
     allowed = list(_flatten_numbers(vals)) + list(_flatten_numbers(evidence))
     allowed += [a * 100 for a in allowed if 0 < abs(a) <= 1]  # probabilities quoted as percents
+    pct_ok = [a * 100 for a in allowed if abs(a) <= 1]
+    pct_ok += [float(c["value"]) for c in claims if isinstance(c, dict) and c.get("kind") == "pct_change"
+               and _numeric(c.get("value"))]
+    pct_ok += [v for k, v in _keyed_numbers(evidence) if _PCT_KEY.search(k)]
     out = []
     for t in text_numbers(text):
         n = t["value"]
+        if t["percent"]:
+            if not any(matches(n, a) for a in pct_ok):
+                out.append(n)
+            continue
         strict = t["currency"] or t["percent"]
         if not strict and not t["suffix"]:
             if re.fullmatch(r"\d{4}", t["token"]) and 1990 <= n <= 2100:

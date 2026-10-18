@@ -93,7 +93,7 @@ def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts
         if d in dates:
             fixed[dates.get_loc(d)] += a
     cuts = cuts or {}
-    scale = np.array([1.0 - cuts.get(c, 0.0) for c in model.cats])
+    scale = np.clip(np.array([1.0 - float(cuts.get(c, 0.0)) for c in model.cats], dtype=float), 0.0, 1.0)
     by_wd = {}
     for w in range(7):
         b = np.where(model.weekdays == w)[0]

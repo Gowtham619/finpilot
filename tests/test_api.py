@@ -253,11 +253,17 @@ def test_profile_regex_on_every_endpoint(client):
 def test_afford_financed_notice_and_unfinanced_none(client):
     client.post("/api/load/priya")
     start = pd.Timestamp(client.get("/api/state/priya").json()["forecast"]["bands"]["dates"][0])
-    fin = client.post("/api/afford/priya", json={"amount": 120000, "financed_months": 12,
+    fin = client.post("/api/afford/priya", json={"amount": 150000, "financed_months": 12,
                                                   "date": str(start.date())}).json()["answer"]
-    n = fin["sim"]["ignored_flows"]
-    assert n > 0 and fin["notice"] == f"{n} installment(s) fall outside the 60-day window and are not simulated"
-    assert fin["notice"] in fin["narrative"]
+    assert fin["sim"]["ignored_flows"] == 0 and fin["sim"]["horizon"] == 365 and not fin.get("notice")
+    assert "365 days" in fin["narrative"] and "12 monthly installments" in fin["narrative"]
+    for d in fin["best_dates"]:  # best dates simulate the installments, not the lump sum
+        assert d["p_overdraft"] <= 0.5, d
+    long = client.post("/api/afford/priya", json={"amount": 150000, "financed_months": 24,
+                                                   "date": str(start.date())}).json()["answer"]
+    n = long["sim"]["ignored_flows"]
+    assert n == 12 and long["notice"] == f"{n} installment(s) fall outside the 365-day window and are not simulated"
+    assert long["notice"] in long["narrative"]
     plain = client.post("/api/afford/priya", json={"amount": 5000}).json()["answer"]
     assert not plain.get("notice")
 
@@ -284,3 +290,37 @@ def test_digest_endpoint_validates_profile_and_data(client):
     assert client.post("/api/digest/bad name").status_code == 400
     with db.session() as s:
         assert db.list_digests(s, "nobody") == []
+
+
+# ---- final review fixes: C5 duel cuts, C3 demo duel ----
+@pytest.mark.parametrize("cuts", [{"dining": "x"}, ["dining"], {"dining": 5}, {"dining": float("nan")},
+                                  {"dining": -0.1}, {"dining": True}, {"nope": 0.2}, "dining", 5])
+def test_duel_cuts_validated(client, cuts):
+    client.post("/api/load/priya")
+    body = {"a": {"amount": 0, "cuts": cuts}, "b": {"amount": 0}}
+    payload = json.dumps(body, allow_nan=True)
+    r = client.post("/api/duel/priya", content=payload, headers={"Content-Type": "application/json"})
+    assert r.status_code == 400, (cuts, r.text)
+
+
+def test_duel_valid_cuts_ok(client):
+    client.post("/api/load/priya")
+    r = client.post("/api/duel/priya", json={"a": {"amount": 0, "cuts": {"dining": 0.5, "shopping": 1}},
+                                             "b": {"amount": 0}})
+    assert r.status_code == 200 and r.json()["answer"]["winner"] in ("a", "b", "tie")
+
+
+def test_demo_duel_has_a_numeric_winner(client):
+    client.post("/api/load/priya")
+    r = client.post("/api/duel/priya", json={"a": {"name": "Buy now", "amount": 80000},
+                                             "b": {"name": "Wait 2 months", "amount": 80000, "date": "2026-12-01"}})
+    ans = r.json()["answer"]
+    assert ans["winner"] == "b" and "lowest balance" in ans["reason"] and "₹" in ans["reason"]
+
+
+def test_body_cannot_override_route_type(client):
+    client.post("/api/load/priya")
+    r = client.post("/api/afford/priya", json={"type": "chat", "question": "hi", "amount": 1000})
+    assert r.status_code == 200 and "verdict" in r.json()["answer"]
+    r = client.post("/api/duel/priya", json={"type": "afford", "amount": 5, "a": {"amount": 0}, "b": {"amount": 0}})
+    assert r.status_code == 200 and "winner" in r.json()["answer"]

@@ -35,20 +35,22 @@ def simulate_purchase(model, balance, amount, on, horizon=60, n=1000, seed=0, fi
     base = monte_carlo(model, balance, horizon, n, seed)
     alt = monte_carlo(model, balance, horizon, n, seed, extra_flows=flows)
     b, a = base.summary(), alt.summary()
-    return {"amount": float(amount), "date": str(pd.Timestamp(on).date()),
+    return {"amount": float(amount), "date": str(pd.Timestamp(on).date()), "horizon": int(horizon),
             "baseline": b, "with_purchase": a,
             "ignored_flows": _count_ignored(model, horizon, flows),
             "delta_p_overdraft": round(a["p_overdraft"] - b["p_overdraft"], 3),
             "delta_end_p50": round(a["end_p50"] - b["end_p50"], 2)}
 
 
-def best_date(model, balance, amount, candidates, horizon=60, n=1000, seed=0):
+def best_date(model, balance, amount, candidates, horizon=60, n=1000, seed=0, financed_months=0):
+    """Candidate start dates ranked by risk; a financed purchase is simulated as its installments."""
     out = []
     start, end = _window(model, horizon)
     for c in candidates:
         if not (start <= pd.Timestamp(c).normalize() <= end):
             continue
-        r = monte_carlo(model, balance, horizon, n, seed, extra_flows=purchase_flows(amount, c))
+        r = monte_carlo(model, balance, horizon, n, seed,
+                        extra_flows=purchase_flows(amount, c, financed_months))
         out.append({"date": str(pd.Timestamp(c).date()), **r.summary()})
     return sorted(out, key=lambda x: (x["p_overdraft"], -x["floor_p50"]))
 
@@ -90,24 +92,42 @@ def _bands(res):
             "p90": [round(float(x), 2) for x in res.p90]}
 
 
+def _bal(x):
+    """Unsigned wording (the grounding check compares unsigned figures)."""
+    return f"₹{x:,.0f}" if x >= 0 else f"overdrawn by ₹{-x:,.0f}"
+
+
 def duel(model, balance, a, b, horizon=90, n=1000, seed=0):
+    """Winner: lower overdraft risk (if more than 2 points apart), else higher median end balance,
+    else higher median lowest balance, else higher average median balance; tie only if all are equal."""
     ra = monte_carlo(model, balance, horizon, n, seed, extra_flows=a["flows"], cuts=a.get("cuts"))
     rb = monte_carlo(model, balance, horizon, n, seed, extra_flows=b["flows"], cuts=b.get("cuts"))
-    sa, sb = ra.summary(), rb.summary()
+    sa = {**ra.summary(), "avg_p50": round(float(ra.p50.mean()), 2)}
+    sb = {**rb.summary(), "avg_p50": round(float(rb.p50.mean()), 2)}
     if abs(sa["p_overdraft"] - sb["p_overdraft"]) > 0.02:
         winner, basis = ("a" if sa["p_overdraft"] < sb["p_overdraft"] else "b"), "overdraft risk"
-    elif sa["end_p50"] != sb["end_p50"]:
-        winner, basis = ("a" if sa["end_p50"] > sb["end_p50"] else "b"), "end balance"
     else:
-        winner, basis = "tie", "nothing"
+        winner, basis = "tie", None
+        for key, label in (("end_p50", "end balance"), ("floor_p50", "lowest balance"),
+                           ("avg_p50", "average balance")):
+            if sa[key] != sb[key]:
+                winner, basis = ("a" if sa[key] > sb[key] else "b"), label
+                break
     if winner == "tie":
-        reason = "Both options end in the same place."
+        reason = (f"Tie: both options have overdraft risk {sa['p_overdraft']*100:.0f}%, median balance in "
+                  f"{horizon} days {_bal(sa['end_p50'])}, median lowest balance {_bal(sa['floor_p50'])} and "
+                  f"average median balance {_bal(sa['avg_p50'])}.")
     else:
         w, l = (sa, sb) if winner == "a" else (sb, sa)
         wn = a["name"] if winner == "a" else b["name"]
         reason = (f"{wn} wins on {basis}: overdraft risk {w['p_overdraft']*100:.0f}% vs "
                   f"{l['p_overdraft']*100:.0f}%, median balance in {horizon} days "
-                  f"₹{w['end_p50']:,.0f} vs ₹{l['end_p50']:,.0f}.")
+                  f"{_bal(w['end_p50'])} vs {_bal(l['end_p50'])}")
+        if basis in ("lowest balance", "average balance"):
+            reason += f", median lowest balance {_bal(w['floor_p50'])} vs {_bal(l['floor_p50'])}"
+        if basis == "average balance":
+            reason += f", average median balance {_bal(w['avg_p50'])} vs {_bal(l['avg_p50'])}"
+        reason += "."
     return {"a": {"name": a["name"], "summary": sa, "bands": _bands(ra)},
             "b": {"name": b["name"], "summary": sb, "bands": _bands(rb)},
             "winner": winner, "reason": reason, "horizon": horizon,

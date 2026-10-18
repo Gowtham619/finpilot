@@ -100,8 +100,7 @@ def test_fallback_narratives_pass_own_grounding_check(world):
             assert ungrounded_numbers(out["narrative"], [], ev) == [], out["narrative"]
     req = {"a": {"name": "Buy now", "amount": 150000, "date": d0}, "b": {"name": "Skip", "amount": 0, "date": d0}}
     out = simulator.run_duel(f["model"], f["balance"], req, None)
-    ev = {"a": out["a"]["summary"], "b": out["b"]["summary"], "h": out["horizon"]}
-    assert ungrounded_numbers(out["narrative"], [], ev) == []
+    assert ungrounded_numbers(out["narrative"], [], simulator.duel_evidence(out)) == []
 
 
 def _ids(df):
@@ -164,3 +163,68 @@ def test_llm_invented_numbers_fall_back_end_to_end(world):
     dreq = {"a": {"name": "Buy now", "amount": 150000, "date": d0}, "b": {"name": "Skip", "amount": 0, "date": d0}}
     assert (simulator.run_duel(fb["model"], fb["balance"], dreq, bad)["narrative"]
             == simulator.run_duel(fb["model"], fb["balance"], dreq, None)["narrative"])
+
+
+# ---- final review fixes: I1 horizon, I2 alternative date, I3 verdict words / adversarial narration ----
+def _chosen(p, floor, date="2026-10-01"):
+    return {"date": date, "p_overdraft": p, "floor_p50": floor}
+
+
+@pytest.mark.parametrize("best,chosen,expect", [
+    ([_chosen(1.0, -5000, "2026-10-08")], _chosen(1.0, -9000), False),       # 100% vs 100%: useless
+    ([_chosen(0.0, 20000, "2026-10-08")], _chosen(0.0, 20500), False),       # 0% vs 0%, no better floor
+    ([_chosen(0.0, 21000, "2026-10-08")], _chosen(0.0, 20500), False),       # floor gain under the margin
+    ([_chosen(0.0, 22000, "2026-10-08")], _chosen(0.0, 20500), True),        # visible floor gain
+    ([_chosen(0.2, 1000, "2026-10-08")], _chosen(0.4, 500), True),           # strictly lower risk
+    ([_chosen(0.4, 9000, "2026-10-08")], _chosen(0.2, 500), False),          # higher risk
+    ([_chosen(0.2, 500)], _chosen(0.2, 500), False),                         # same date
+    ([], _chosen(0.2, 500), False),
+])
+def test_better_date_rule(best, chosen, expect):
+    assert (simulator.better_date(best, chosen) is not None) is expect
+
+
+def test_afford_text_only_suggests_really_better_dates(world):
+    p, df = world
+    f = forecaster.run(df, p.opening_balance, (), None)
+    d0 = str(f["model"].last_date.date() + pd.Timedelta(days=1))
+    for amount in (5000, f["balance"] * 3):
+        out = simulator.afford(f["model"], f["balance"], {"amount": amount, "date": d0, "financed_months": 0})
+        chosen = {"date": out["sim"]["date"], **out["sim"]["with_purchase"]}
+        alt = simulator.better_date(out["best_dates"], chosen)
+        assert ("date tested" in out["narrative"]) is (alt is not None), out["narrative"]
+
+
+def test_afford_horizon_covers_installments():
+    assert simulator.afford_horizon(0) == 60 and simulator.afford_horizon(1) == 62
+    assert simulator.afford_horizon(6) == 217 and simulator.afford_horizon(11) == 365
+    assert simulator.afford_horizon(60) == 365
+
+
+@pytest.mark.parametrize("text,verdict,ok", [
+    ("Yes, this is completely safe.", "unsafe", False),
+    ("This purchase is unsafe.", "unsafe", True),
+    ("Risky but possible.", "risky", True),
+    ("It is not safe.", "unsafe", False),
+    ("No verdict words here.", "safe", True),
+])
+def test_verdict_consistency(text, verdict, ok):
+    assert simulator.verdict_consistent(text, verdict) is ok
+
+
+def test_afford_rejects_narrative_with_wrong_verdict(world):
+    p, df = world
+    f = forecaster.run(df, p.opening_balance, (), None)
+    d0 = str(f["model"].last_date.date() + pd.Timedelta(days=1))
+    req = {"amount": f["balance"] * 3, "date": d0, "financed_months": 0}
+    out = simulator.afford(f["model"], f["balance"], dict(req),
+                           FakeLLM(lambda s, u: {"narrative": "Yes, this is completely safe."}))
+    assert out["verdict"] == "unsafe" and "completely safe" not in out["narrative"]
+
+
+def test_adversarial_narration_with_false_percent_is_rejected(world):
+    p, df = world
+    f = forecaster.run(df, p.opening_balance, (), FakeLLM(
+        lambda s, u: {"narrative": "There is a 60% chance you go overdrawn within 30 days."}))
+    if f["summary"]["p_overdraft"] != 0.6:
+        assert "60%" not in f["narrative"]

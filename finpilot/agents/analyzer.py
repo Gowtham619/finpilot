@@ -1,5 +1,5 @@
 from ..engines.analyze import analyze_all
-from .common import inr, narrate
+from .common import grounded_or, inr, narrate
 
 WEIGHT = {"duplicate_charge": 0, "large_charge": 1, "category_spike": 2, "unused_subscription": 3,
           "behavior_trigger": 4, "subscription": 5}
@@ -33,10 +33,15 @@ def run(df, llm=None):
     overview = f"{len(findings)} findings; most important: {findings[0]['summary']}" if findings else "No findings."
     res = narrate(llm, SYSTEM, [{"id": f["id"], "summary": f["summary"]} for f in findings], None)
     if isinstance(res, dict):
-        order = [i for i in res.get("priority", []) if i in {f["id"] for f in findings}]
+        ids = {f["id"] for f in findings}
+        pri = res.get("priority")
+        order = []
+        if isinstance(pri, list):
+            for i in pri:
+                if isinstance(i, str) and i in ids and i not in order:
+                    order.append(i)
         if order:
             rank = {i: n for n, i in enumerate(order)}
             findings.sort(key=lambda f: rank.get(f["id"], len(rank)))
-        if isinstance(res.get("overview"), str) and res["overview"].strip():
-            overview = res["overview"]
+        overview = grounded_or(res.get("overview"), findings, overview)
     return {"findings": findings, "overview": overview}

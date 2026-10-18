@@ -102,3 +102,65 @@ def test_fallback_narratives_pass_own_grounding_check(world):
     out = simulator.run_duel(f["model"], f["balance"], req, None)
     ev = {"a": out["a"]["summary"], "b": out["b"]["summary"], "h": out["horizon"]}
     assert ungrounded_numbers(out["narrative"], [], ev) == []
+
+
+def _ids(df):
+    return [f["id"] for f in analyzer.run(df, None)["findings"]]
+
+
+def test_analyzer_overview_with_invented_number_falls_back(world):
+    _, df = world
+    base = analyzer.run(df, None)["overview"]
+    llm = FakeLLM(lambda s, u: {"overview": "Cancel it and save ₹91357 a month.", "priority": []})
+    assert analyzer.run(df, llm)["overview"] == base
+
+
+@pytest.mark.parametrize("pri", [None, [["a"]], "x", 5, [{"k": 1}, None, 3]])
+def test_analyzer_malformed_priority_never_crashes(world, pri):
+    _, df = world
+    ids = _ids(df)
+    out = analyzer.run(df, FakeLLM(lambda s, u: {"overview": "ok", "priority": pri}))
+    assert [f["id"] for f in out["findings"]] == ids
+
+
+def test_analyzer_priority_duplicates_and_non_dict(world):
+    _, df = world
+    ids = _ids(df)
+    out = analyzer.run(df, FakeLLM(lambda s, u: {"priority": [ids[-1], ids[-1], ids[0]]}))
+    got = [f["id"] for f in out["findings"]]
+    assert got[0] == ids[-1] and got[1] == ids[0] and sorted(got) == sorted(ids)
+    assert analyzer.run(df, FakeLLM(lambda s, u: ["nope"]))["findings"]
+
+
+def test_forecaster_bad_goals_yield_error_entries(world):
+    p, df = world
+    goals = [{"name": "Bad", "target": 1000, "deadline": "not a date"},
+             {"name": "NoTarget", "deadline": "2027-01-01"},
+             "junk",
+             {"name": "Str", "target": "abc", "deadline": "2027-01-01"},
+             {"name": "Past", "target": 1000, "deadline": "2020-01-01"}]
+    out = forecaster.run(df, p.opening_balance, goals, None)["goals"]
+    assert [("error" in g) for g in out] == [True, True, True, True, False]
+    assert out[2]["name"] == "?" and out[1]["name"] == "NoTarget"
+    assert out[4]["horizon"] == 1 and "p_met" in out[4]
+
+
+def test_advisor_skips_goal_error_entries(world):
+    from finpilot.agents import advisor
+    out = advisor.build_candidates([], world[1], goals=[{"name": "X", "error": "bad"}, "junk"])
+    assert not any(c["type"] == "goal_behind" for c in out)
+
+
+def test_llm_invented_numbers_fall_back_end_to_end(world):
+    p, df = world
+    bad = FakeLLM(lambda s, u: {"narrative": "You will have ₹7777777 left."})
+    fb = forecaster.run(df, p.opening_balance, (), None)
+    f = forecaster.run(df, p.opening_balance, (), bad)
+    assert f["narrative"] == fb["narrative"] and "7777777" not in f["narrative"]
+    d0 = str(fb["model"].last_date.date() + pd.Timedelta(days=5))
+    req = {"amount": 80000, "date": d0, "financed_months": 0}
+    assert (simulator.afford(fb["model"], fb["balance"], req, bad)["narrative"]
+            == simulator.afford(fb["model"], fb["balance"], req, None)["narrative"])
+    dreq = {"a": {"name": "Buy now", "amount": 150000, "date": d0}, "b": {"name": "Skip", "amount": 0, "date": d0}}
+    assert (simulator.run_duel(fb["model"], fb["balance"], dreq, bad)["narrative"]
+            == simulator.run_duel(fb["model"], fb["balance"], dreq, None)["narrative"])

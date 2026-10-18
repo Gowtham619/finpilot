@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from contextlib import contextmanager
 
 import pandas as pd
@@ -90,7 +91,7 @@ _Session = None
 def configure(url=None):
     global _engine, _Session
     url = url or config.DB_URL
-    kw = {"connect_args": {"check_same_thread": False}}
+    kw = {"json_serializer": lambda o: json.dumps(o, default=str), "connect_args": {"check_same_thread": False}}
     if url in ("sqlite://", "sqlite:///:memory:"):
         kw["poolclass"] = StaticPool
     _engine = create_engine(url, **kw)

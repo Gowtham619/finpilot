@@ -50,6 +50,8 @@ def build_candidates(findings, df, forecast=None, goals=None):
         add("forecast_risk", "Protect cash before the projected low point", ["forecast"],
             {**s, "horizon": forecast["horizon"]}, [])
     for g in (goals or []):
+        if not isinstance(g, dict) or "error" in g:
+            continue
         if g.get("p_met", 1) < 0.5:
             add("goal_behind", f"Goal '{g['name']}' is falling behind", [f"goal:{g['name']}"], g, [])
     out.sort(key=lambda c: -(c["est_monthly_savings"] + c["est_one_off"]))

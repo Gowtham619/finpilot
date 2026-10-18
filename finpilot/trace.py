@@ -18,9 +18,14 @@ class Trace:
 
     def since(self, run_id, n=0):
         with self._lock:
-            return list(self._ev[run_id][n:])
+            return list(self._ev.get(run_id, [])[n:])
 
     def finish(self, run_id):
+        """Idempotent. The 'done' event is emitted before is_done() flips; consumers should treat
+        either the 'done' event or is_done() as terminal."""
+        with self._lock:
+            if run_id in self._done:
+                return
         self.emit(run_id, "coordinator", "done", "run complete")
         with self._lock:
             self._done.add(run_id)

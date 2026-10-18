@@ -50,3 +50,19 @@ def test_trace_bus():
     assert not t.is_done("r")
     t.finish("r")
     assert t.is_done("r")
+
+
+def test_blob_with_numpy_and_timestamp(s):
+    import numpy as np
+    db.save_recs(s, "p1", [{"id": "r", "n": np.int64(5), "f": np.float64(1.5), "d": pd.Timestamp("2026-01-01")}])
+    s.flush()
+    assert db.load_recs(s, "p1")[0]["id"] == "r"
+
+
+def test_trace_unknown_run_and_idempotent_finish():
+    t = Trace()
+    assert t.since("ghost") == [] and "ghost" not in t._ev
+    t.emit("r", "a", "start", "x")
+    t.finish("r")
+    t.finish("r")
+    assert [e["kind"] for e in t.since("r")].count("done") == 1

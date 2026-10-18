@@ -39,10 +39,16 @@ def audit(rec, df):
     return issues
 
 
+def _describe_one(i):
+    if i["type"] == "mismatch":
+        return f"mismatch: claimed {i['claim'].get('value')} vs actual {i['actual']}"
+    if i["type"] == "claim_not_in_text":
+        return f"claim_not_in_text: {i['claim'].get('kind')} {i['claim'].get('value')}"
+    return f"{i['type']}: {i.get('claim') or i.get('value')}"
+
+
 def _describe(issues):
-    return "; ".join(
-        f"{i['type']}: claimed {i['claim'].get('value')} vs actual {i['actual']}" if i["type"] == "mismatch"
-        else f"{i['type']}: {i.get('claim') or i.get('value')}" for i in issues)
+    return "; ".join(_describe_one(i) for i in issues)
 
 
 def verify_all(recs, df, llm=None, emit=None):

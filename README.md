@@ -6,14 +6,14 @@ Deployed demo: see "Before you submit" at the end (not deployed yet).
 
 ## What it does
 
-1. **Ingest.** Upload a CSV (`date, description, amount`, plus an opening balance) or click **Load persona** to load one of three synthetic personas (priya, arjun, meera).
-2. **Categorize.** Deterministic rules label what they can; the LLM labels the rest; your corrections override both.
-3. **Analyze.** Engines find large charges, duplicate charges, category spikes, recurring subscriptions, likely-unused subscriptions and payday-driven spending.
+1. **Ingest.** Upload a CSV (`date, description, amount`, plus an opening balance and a profile name, default `me`) or click **Load persona** to load one of three synthetic personas (priya, arjun, meera).
+2. **Categorize.** Deterministic rules label what they can; the LLM labels the rest; your corrections override both. Corrections are API-only (no UI control): `POST /api/correct/{profile}` with `{"merchant": ..., "category": ...}`; the merchant is matched after the same normalization as statement descriptions (so `upi-blue tokai coffee BLR` becomes `BLUE TOKAI COFFEE`), and an empty merchant is rejected.
+3. **Analyze.** Engines find large charges, duplicate charges, category spikes, recurring subscriptions, likely-unused subscriptions and payday-driven spending. Category spikes are computed on monthly totals with flagged large charges removed (they are reported separately; the Chat `month_total` tool reports the plain total including them) and never on `rent`, `income`, `uncategorized` or `other`; a spike describes a past month ("would have saved about ₹X that month"), not a recurring saving.
 4. **Forecast.** A weekday-profile model plus 1,000 weekday-matched bootstrap Monte Carlo paths give p10/p50/p90 balance bands, overdraft probability and goal ETAs.
 5. **Advise.** The Advisor turns findings into specific actions (e.g. cancel a subscription, dispute a duplicate charge), each carrying finding ids, evidence and numeric claims.
 6. **Verify.** The Verifier recomputes each recommendation's recomputable claims from raw transactions and checks the numbers in its text. Mismatching recommendations are corrected or dropped; only then are recommendations displayed. Overview, forecast, simulator and chat narration is not recomputed from raw transactions (numbers there are restricted to engine evidence).
-7. **Ask.** "Can I afford it?" simulates a purchase (optionally financed) against the Monte Carlo futures; "Decision duel" runs two options on identical random futures; Chat answers questions from read-only query tools; Goals track a target balance by a deadline.
-8. **Nudges.** A scheduler sends a weekly digest and a daily mid-month pace check (email only if SMTP is configured; otherwise stored for the UI).
+7. **Ask.** "Can I afford it?" simulates a purchase (optionally financed; the horizon is extended to cover the installments, up to 365 days) against the Monte Carlo futures and only suggests another date if it is really better; "Decision duel" runs two options on identical random futures and picks a winner by overdraft risk, then median end balance, then median lowest balance, then average median balance (a tie only if all are equal), always with the numbers; Chat answers questions from read-only query tools (without a key, a keyword router handles category + month questions such as "How much did I spend on food delivery in July?"); Goals track a target balance by a deadline.
+8. **Nudges.** A scheduler sends a weekly digest and a daily mid-month pace check (email only if SMTP is configured). Every digest and pace alert is stored and shown in the **Digest** card on the dashboard (`GET /api/digests/{profile}`), which also has a **Send digest now** button (`POST /api/digest/{profile}`). The digest's "One action" prefers recurring savings (unused subscriptions) over one-off items such as past spikes.
 
 A live trace panel streams every agent step (SSE) as it happens.
 
@@ -49,23 +49,26 @@ START --route--> pipeline: categorize -> analyze -> forecast -> advise -> verify
 ### Verifier: guarantees and limits
 
 What it does, for each recommendation:
-- Recomputes every claim (`monthly_cost`, `annual_cost`, `month_total`, `pct_change`, `txn_amount`) from the raw transactions and compares with the stated value (tolerance: the larger of 1 or 2% of the true value; 3 points for `pct_change`).
-- Extracts the numbers from the advice text and requires each to match a claim value or a number in the engine evidence within 1% of that value or within 1 in absolute terms, whichever is larger (so 15 vs 16 passes). Numbers under 10, dates and a few constants (12, 24, 30, 60, 90, 100) are not checked at all.
-- On a mismatch it fixes the claims to the recomputed values and rewrites the text (LLM rewrite if available and itself clean, else a template). A claim that cannot be recomputed drops the recommendation.
+- Recomputes every claim (`monthly_cost`, `annual_cost`, `month_total`, `pct_change`, `txn_amount`) from the raw transactions and compares with the stated value (tolerance: the larger of 1 or 2% of the true value; 3 points for `pct_change`). `month_total` and `pct_change` use the same aggregation as the spike engine (`engines/analyze.spend_matrix`: monthly category totals with the large charges detected in that data removed, a month without spend counting as 0, baseline = median over all months), so an engine finding and its recomputation agree by construction.
+- Requires every claim value to be stated in the text (same tolerance as below; a `pct_change` is matched as the number before `%`). Advice that omits or contradicts its own claims is flagged (`claim_not_in_text`).
+- Extracts the numbers from the advice text and requires each to match a claim value or a number in the engine evidence within 1% of that value or within 1 in absolute terms, whichever is larger (so 15 vs 16 passes). A percentage must match a percent-like value (a probability times 100, a `pct_change` claim, or an evidence field named like `pct`/`share`/`rate`). Dates are not checked; bare numbers under 10 and a few bare constants (12, 24, 30, 60, 90, 100) are not checked, but they are checked when followed by `%` or preceded by a currency token (`₹`, `Rs`, `INR`, `$`, `USD`). A goal's own name (e.g. "Bike 150cc") is not treated as a number.
+- On any issue it fixes the claims to the recomputed values and rewrites the text (LLM rewrite if available and itself clean, else a template that states the claim values). A claim that cannot be recomputed drops the recommendation.
 
 What it does not guarantee:
 - Recommendations of type `behavior_trigger`, `forecast_risk` and `goal_behind` have no recomputable claims. They are marked `verification: evidence_only`: their text numbers are checked only against the engine's own evidence, not against raw transactions.
-- Numbers below 10 are not checked. A `$` amount is not treated as a currency token (only `₹`, `Rs`, `INR`), so `$5000` is treated as the bare number 5000 (still compared, but not recognised as a currency amount).
+- Bare numbers below 10 (no `%`, no currency) and bare constants are not checked.
+- Non-numeric statements are not checked at all: a narrative such as "your account is compromised, move your savings" contains no number and passes the number check. The only non-numeric check is in the afford narrative, which is replaced by the deterministic text if it uses a verdict word (safe/risky/unsafe) other than the computed verdict.
 - The tolerance (1% or +/-1 absolute, whichever is larger) means a number slightly off a real value passes.
 - It checks that numbers are consistent with the data, not that the advice is wise or that the narrative text from other agents (overview, forecast narrative) is correct.
 
-**Example of a Verifier catch (scripted LLM in tests, not a live-model run).** `tests/test_graph.py::test_pipeline_verifier_catches_llm_hallucination` scripts a fake LLM that triples every claim value and appends "save ₹99999". This is the Verifier trace from running it on the `generate(seed=0)` data:
+**Example of a Verifier catch (scripted LLM in tests, not a live-model run).** `tests/test_graph.py::test_pipeline_verifier_catches_llm_hallucination` scripts a fake LLM that triples every claim value and appends "save ₹99999". This is an excerpt of the Verifier trace from running it on the `generate(seed=0)` data:
 
 ```
-caught     | Cancel HOTSTAR: mismatch: claimed 897.0 vs actual 299.0; mismatch: claimed 10764.0 vs actual 3588.0; ungrounded_number: 99999.0
-corrected  | corrected via template: Cancel HOTSTAR
-caught     | Dispute duplicate charge at AMAZON: mismatch: claimed 6597.0 vs actual 2199.0; ungrounded_number: 99999.0
+caught     | Dispute duplicate charge at AMAZON: mismatch: claimed 6597.0 vs actual 2199.0; ungrounded_number: 99999.0; claim_not_in_text: txn_amount 6597.0
 corrected  | corrected via template: Dispute duplicate charge at AMAZON
+caught     | Cancel HOTSTAR: mismatch: claimed 897.0 vs actual 299.0; mismatch: claimed 10764.0 vs actual 3588.0; ungrounded_number: 99999.0; claim_not_in_text: monthly_cost 897.0; claim_not_in_text: annual_cost 10764.0
+corrected  | corrected via template: Cancel HOTSTAR
+...        | (six more caught/corrected pairs)
 result     | 8 verified, 0 dropped
 ```
 
@@ -73,11 +76,13 @@ Reproduce: `python -m pytest tests/test_graph.py -k hallucination -q`. How often
 
 ## Mesh API usage
 
-All LLM traffic goes through one class, `finpilot/llm.py` (`LLM`), which uses the OpenAI SDK pointed at Mesh API: `base_url = https://api.meshapi.ai/v1` (defined in `finpilot/config.py`), key from `MESH_API_KEY`, model from `FINPILOT_MODEL` (default `openai/gpt-4o-mini`), temperature 0, one retry. With no key or on failure it raises `LLMUnavailable` and each agent falls back to its deterministic path.
+All LLM traffic goes through one class, `finpilot/llm.py` (`LLM`), which uses the OpenAI SDK pointed at Mesh API: `base_url = https://api.meshapi.ai/v1` (defined in `finpilot/config.py`), key from `MESH_API_KEY`, model from `FINPILOT_MODEL` (default `openai/gpt-4o-mini`), temperature 0, a 20-second request timeout, SDK retries disabled and one retry of our own (two attempts in total, 1 s apart). With no key or on failure it raises `LLMUnavailable` and each agent falls back to its deterministic path.
 
 ## Self-evaluation
 
 Source of truth: `eval/results.md` and `eval/results.json`. The committed run is `python -m eval.run_eval --no-llm`; **the LLM-dependent sections have NOT been run** because no `MESH_API_KEY` was available in the build environment. Cells show mean (min-max) across the three synthetic personas.
+
+When run with an LLM, `run_eval` first pings the model and aborts with an error if it is unavailable (so rules-only numbers are never recorded as "hybrid"), records how many rows the LLM actually labelled (`n_llm_labeled`), and computes the grounding rate only over recommendations the LLM wrote (template recommendations are excluded; with none it reports "n/a").
 
 ### Categorization
 | Method | Accuracy | Macro-F1 | Coverage |
@@ -177,7 +182,7 @@ docker run --rm -p 8000:8000 -e MESH_API_KEY=$MESH_API_KEY finpilot
 
 The image keeps SQLite in `/tmp` (`FINPILOT_DB=sqlite:////tmp/finpilot.db`), so data is ephemeral: each restart re-seeds the demo persona and loses uploads and corrections. The scheduler also runs inside the container (`FINPILOT_SCHEDULER=1`); it only emails if SMTP is configured.
 
-Tested environment: local Python 3.14 with pandas 3.0.6 (251 tests pass). The Docker image targets Python 3.12 and the CI workflow uses Python 3.11; neither the Docker build nor the CI run has been tested.
+Tested environment: local Python 3.14 with pandas 3.0.6 (335 tests pass). The Docker image targets Python 3.12 and the CI workflow uses Python 3.11; neither the Docker build nor the CI run has been tested.
 
 Without Docker, the same autoseeded start was smoke-tested locally with `FINPILOT_AUTOSEED=1 uvicorn finpilot.api:app` (page and `/api/state/priya` returned data).
 
@@ -190,14 +195,14 @@ Environment variables:
 | `FINPILOT_DB` | SQLAlchemy URL, default `sqlite:///finpilot.db` |
 | `FINPILOT_AUTOSEED` | `1` loads persona `priya` at startup (set in the Dockerfile) |
 | `FINPILOT_SCHEDULER` | `1` starts the scheduler (Dockerfile sets 1; `.env.example` sets 0) |
-| `SMTP_HOST`, `SMTP_PORT` (default 587), `SMTP_USER`, `SMTP_PASS`, `DIGEST_TO` | email delivery; without `SMTP_HOST` and `DIGEST_TO` digests are only stored for the UI |
+| `SMTP_HOST`, `SMTP_PORT` (default 587), `SMTP_USER`, `SMTP_PASS`, `DIGEST_TO` | email delivery; without `SMTP_HOST` and `DIGEST_TO` digests are only stored and shown in the dashboard's Digest card |
 | `FINPILOT_SYNC` | `1` runs pipelines synchronously (used by tests) |
 
-Scheduler jobs (server local time, missed runs coalesced with 1 h grace): weekly digest every Monday 09:00; pace check daily 18:00 (alert skipped if the same one was raised in the last 24 h).
+Scheduler jobs (server local time, missed runs coalesced with 1 h grace): weekly digest every Monday 09:00 (built from the stored recommendations, not a fresh pipeline run); pace check daily 18:00 against today's date. Pace alerts are deduplicated on their stable id `pace:{category}:{month}`: at most one per id per 24 h, and after that only if the overage grew by more than 25%.
 
 ### Security notes
 - `POST /api/digest/{profile}` is unauthenticated. The recipient is fixed to `DIGEST_TO` and cannot be chosen by the caller, but anyone who can reach the server can trigger a digest email. Do not configure SMTP on a public deployment unless that is acceptable (use a throwaway address).
-- Input limits: uploads 5 MB and 50,000 rows; `financed_months` 0..60; simulation `horizon` 1..365 days. Profile names must match `^[A-Za-z0-9_-]{1,40}$`.
+- Input limits: uploads 5 MB and 50,000 rows; `financed_months` 0..60; simulation `horizon` 1..365 days; duel `cuts` must map a known category to a number in [0, 1]; goals need a 1-60 character name, a target in (0, 1e12] and a deadline between one year before and ten years after the data's last date. Profile names must match `^[A-Za-z0-9_-]{1,40}$`.
 - There is no user authentication: profiles are not private to a visitor. Do not upload real financial data to a shared deployment.
 - The CI workflow `.github/workflows/agent-arena-2026-checks.yml` (required by the hackathon) downloads a script from the hackathon server and runs it with the repository secrets available. Use a revocable Mesh key.
 

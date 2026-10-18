@@ -2,6 +2,7 @@ import io
 import json
 import time
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 from finpilot import api, db, service
@@ -84,9 +85,29 @@ def test_duel_bad_inputs_are_400(client):
     assert client.post("/api/duel/priya", json={"a": {"amount": 1}}).status_code == 400
     assert client.post("/api/duel/priya", json={"a": {"amount": "x"}, "b": {"amount": 0}}).status_code == 400
     assert client.post("/api/duel/priya", json={"a": {"amount": 1, "date": "zzz"}, "b": {"amount": 0}}).status_code == 400
-    # duel tolerates out-of-window dates (engine reports ignored_flows) rather than erroring
-    r = client.post("/api/duel/priya", json={"a": {"amount": 1, "date": "2020-01-01"}, "b": {"amount": 0}})
-    assert r.status_code == 200 and r.json()["answer"]["ignored_flows"] >= 1
+    r = client.post("/api/duel/priya", json={"a": {"name": "Early", "amount": 1, "date": "2020-01-01"}, "b": {"amount": 0}})
+    assert r.status_code == 400 and "Early" in r.json()["detail"] and "outside" in r.json()["detail"]
+    assert client.post("/api/duel/priya", json={"a": {"amount": -1}, "b": {"amount": 0}}).status_code == 400
+    assert client.post("/api/duel/priya", json={"a": {"amount": 1, "financed_months": 99}, "b": {"amount": 0}}).status_code == 400
+    # zero-amount option needs no valid date window
+    r = client.post("/api/duel/priya", json={"a": {"amount": 0, "date": "2020-01-01"}, "b": {"amount": 0}})
+    assert r.status_code == 200
+
+
+def test_duel_installments_past_horizon_are_noticed(client):
+    client.post("/api/load/priya")
+    last = pd.Timestamp(client.get("/api/state/priya").json()["forecast"]["bands"]["dates"][0])
+    r = client.post("/api/duel/priya", json={"a": {"name": "EMI", "amount": 60000, "financed_months": 12,
+                                                    "date": str(last.date())}, "b": {"amount": 0}})
+    assert r.status_code == 200
+    a = r.json()["answer"]
+    assert a["ignored_flows"] >= 1 and "outside the 90-day window" in a["notice"]
+
+
+def test_afford_negative_and_financed_months_limits(client):
+    client.post("/api/load/priya")
+    assert client.post("/api/afford/priya", json={"amount": 100, "financed_months": 61}).status_code == 400
+    assert client.post("/api/afford/priya", json={"amount": 100, "financed_months": -1}).status_code == 400
 
 
 def test_unknown_request_type_rejected():
@@ -138,6 +159,17 @@ def test_upload_csv_and_bad_csv(client):
     assert bad.status_code == 400 and "date" in bad.json()["detail"]
 
 
+def _assert_ui_has_no_html_sinks():
+    import re
+    js = (api.HERE / "static" / "app.js").read_text()
+    html = (api.HERE / "templates" / "index.html").read_text()
+    for src in (js, html):
+        for bad in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(",
+                    "new Function", "srcdoc"):
+            assert bad not in src, bad
+    assert not re.search(r"\son\w+\s*=", html, re.I), "inline event handler in index.html"
+
+
 def test_script_in_description_roundtrips_as_text(client):
     evil = "<script>alert(1)</script>"
     rows = ["date,description,amount", "2026-01-01,ACME CORP SALARY,90000"]
@@ -157,7 +189,7 @@ def test_script_in_description_roundtrips_as_text(client):
     client.post("/api/rerun/xss")
     st = client.get("/api/state/xss").json()
     assert st["goals"][0]["name"] == evil and st["forecast"]["goals"][0]["name"] == evil
-    assert "innerHTML" not in (api.HERE / "static" / "app.js").read_text()
+    _assert_ui_has_no_html_sinks()
 
 
 def test_goals_roundtrip(client):
@@ -174,5 +206,46 @@ def test_goals_roundtrip(client):
 def test_correction_changes_category(client):
     client.post("/api/load/priya")
     r = client.post("/api/correct/priya", json={"merchant": "PVR CINEMAS", "category": "dining"})
-    assert r.status_code == 200
-    assert db.corrections is not None
+    assert r.status_code == 200 and r.json()["run_id"]
+    with db.session() as sess:
+        assert db.corrections(sess, "priya")["PVR CINEMAS"] == "dining"
+
+
+def _post_csv(client, profile, body, balance="0"):
+    return client.post("/api/upload", data={"profile": profile, "opening_balance": balance},
+                       files={"file": ("t.csv", io.BytesIO(body), "text/csv")})
+
+
+def test_upload_size_limit_413(client):
+    big = b"date,description,amount\n" + b"x" * (5 * 1024 * 1024 + 10)
+    assert _post_csv(client, "big", big).status_code == 413
+
+
+def test_upload_row_cap_400(client, monkeypatch):
+    monkeypatch.setattr(service, "MAX_ROWS", 10)
+    rows = "date,description,amount\n" + "\n".join(f"2026-01-{d:02d},A,-1" for d in range(1, 21))
+    r = _post_csv(client, "rows", rows.encode())
+    assert r.status_code == 400 and "too many rows" in r.json()["detail"]
+
+
+def test_upload_rejects_bad_profile_and_balance(client):
+    ok_csv = _csv().encode()
+    assert _post_csv(client, "bad name!", ok_csv).status_code == 400
+    assert _post_csv(client, "a" * 41, ok_csv).status_code == 400
+    assert _post_csv(client, "p", ok_csv, "nan").status_code == 400
+    assert _post_csv(client, "p", ok_csv, "inf").status_code == 400
+    assert _post_csv(client, "p", ok_csv, "100").status_code == 200
+
+
+def test_profile_regex_on_every_endpoint(client):
+    bad = "bad%20name"
+    assert client.get(f"/api/state/{bad}").status_code == 400
+    assert client.get(f"/api/goals/{bad}").status_code == 400
+    assert client.post(f"/api/goals/{bad}", json={}).status_code == 400
+    assert client.post(f"/api/afford/{bad}", json={"amount": 1}).status_code == 400
+    assert client.post(f"/api/duel/{bad}", json={}).status_code == 400
+    assert client.post(f"/api/chat/{bad}", json={}).status_code == 400
+    assert client.post(f"/api/rerun/{bad}").status_code == 400
+    assert client.post(f"/api/correct/{bad}", json={"category": "dining"}).status_code == 400
+    with pytest.raises(ValueError):
+        service.start_pipeline("bad name", pd.DataFrame(), 0)

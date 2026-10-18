@@ -1,6 +1,8 @@
 const $ = (s) => document.querySelector(s);
+let currentES = null;
 let profile = new URLSearchParams(location.search).get("profile") || "priya";
 const charts = {};
+// Chart.js is loaded from a CDN without SRI (known, accepted for this demo).
 const TABS = [["dashboard", "Dashboard"], ["afford", "Can I afford…?"], ["duel", "Decision duel"],
               ["recs", "Recommendations"], ["goals", "Goals"], ["chat", "Chat"]];
 
@@ -38,18 +40,31 @@ function addEvent(e) {
 }
 function follow(runId, then) {
   $("#trace").replaceChildren();
-  const es = new EventSource(`/trace/${runId}/stream`);
+  if (currentES) currentES.close();
+  const es = new EventSource(`/trace/${encodeURIComponent(runId)}/stream`);
+  currentES = es;
   es.addEventListener("trace", (m) => {
     const e = JSON.parse(m.data);
     addEvent(e);
     if (e.kind === "done") { es.close(); if (then) then(); }
   });
-  es.onerror = () => es.close();
+  es.onerror = () => {
+    es.close();
+    addEvent({ agent: "client", kind: "error", summary: "trace stream disconnected" });
+    if (then) then();
+  };
 }
 function fail(e) { $("#err").textContent = e.message; setTimeout(() => ($("#err").textContent = ""), 6000); }
 
 function renderState(st) {
-  if (!st.has_data) { $("#overview").textContent = "Load a persona or upload a CSV to begin."; return; }
+  if (!st.has_data || !st.forecast) {
+    $("#kpis").replaceChildren(); $("#findings").replaceChildren(); $("#recList").replaceChildren();
+    $("#goList").replaceChildren(); $("#narrative").textContent = "";
+    ["cSpend", "cFore"].forEach((id) => { if (charts[id]) { charts[id].destroy(); delete charts[id]; } });
+    $("#overview").textContent = st.has_data ? "Analysis is still running or failed; see the trace."
+      : "Load a persona or upload a CSV to begin.";
+    return;
+  }
   const f = st.forecast;
   const k = $("#kpis"); k.replaceChildren();
   [[money(st.balance), "Current balance"], [money(f.summary.end_p50), `Median in ${f.horizon} days`],
@@ -90,9 +105,9 @@ function renderState(st) {
     gl.append(c);
   });
 }
-async function refresh() { renderState(await api(`/api/state/${profile}`)); }
+async function refresh() { renderState(await api(`/api/state/${encodeURIComponent(profile)}`)); }
 
-function begin(p) { profile = p.profile; follow(p.run_id, () => { history.replaceState(null, "", `?profile=${p.profile}`); refresh(); }); }
+function begin(p) { profile = p.profile; follow(p.run_id, () => { history.replaceState(null, "", `?profile=${encodeURIComponent(p.profile)}`); refresh(); }); }
 
 async function init() {
   TABS.forEach(([id, label]) => { const b = el("button", "", label); b.dataset.t = id; b.onclick = () => show(id); $("#nav").append(b); });
@@ -109,7 +124,7 @@ async function init() {
     const f = Object.fromEntries(new FormData(e.target));
     const body = { amount: +f.amount, financed_months: +f.financed_months || 0 };
     if (f.date) body.date = f.date;
-    api(`/api/afford/${profile}`, body).then((r) => {
+    api(`/api/afford/${encodeURIComponent(profile)}`, body).then((r) => {
       follow(r.run_id);
       const a = r.answer, o = $("#afOut"); o.replaceChildren();
       o.append(el("div", "card", a.narrative), el("div", "card", "Verdict: " + a.verdict));
@@ -121,9 +136,10 @@ async function init() {
     const f = Object.fromEntries(new FormData(e.target));
     const body = { a: { name: f.an, amount: +f.aa }, b: { name: f.bn, amount: +f.ba, date: f.bd } };
     if (f.ad) body.a.date = f.ad;
-    api(`/api/duel/${profile}`, body).then((r) => {
+    api(`/api/duel/${encodeURIComponent(profile)}`, body).then((r) => {
       follow(r.run_id);
       const a = r.answer; $("#duOut").replaceChildren(el("div", "card", a.narrative));
+      if (a.notice) $("#duOut").append(el("div", "card", "Notice: " + a.notice));
       [["cDuelA", a.a], ["cDuelB", a.b]].forEach(([id, side]) => chart(id, { type: "line",
         data: { labels: side.bands.dates, datasets: [
           { label: "p90", data: side.bands.p90, borderColor: "#334155", pointRadius: 0 },
@@ -136,13 +152,13 @@ async function init() {
   $("#goForm").onsubmit = (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
-    api(`/api/goals/${profile}`, { name: f.name, target: +f.target, deadline: f.deadline })
-      .then(() => api(`/api/rerun/${profile}`, {})).then(begin).catch(fail);
+    api(`/api/goals/${encodeURIComponent(profile)}`, { name: f.name, target: +f.target, deadline: f.deadline })
+      .then(() => api(`/api/rerun/${encodeURIComponent(profile)}`, {})).then(begin).catch(fail);
   };
   $("#chForm").onsubmit = (e) => {
     e.preventDefault();
     const q = new FormData(e.target).get("q");
-    api(`/api/chat/${profile}`, { question: q }).then((r) => {
+    api(`/api/chat/${encodeURIComponent(profile)}`, { question: q }).then((r) => {
       follow(r.run_id); $("#chOut").prepend(el("div", "card", "Q: " + q), el("div", "card", r.answer.text));
     }).catch(fail);
   };

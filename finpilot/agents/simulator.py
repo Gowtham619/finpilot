@@ -48,4 +48,7 @@ def run_duel(model, balance, req, llm=None):
     res["narrative"] = grounded_or(out.get("narrative") if isinstance(out, dict) else None,
                                    {"a": res["a"]["summary"], "b": res["b"]["summary"], "h": res["horizon"]},
                                    res["reason"])
+    if res.get("ignored_flows"):
+        res["notice"] = (f"{res['ignored_flows']} installment(s) fall outside the "
+                         f"{res['horizon']}-day window and are not simulated.")
     return res

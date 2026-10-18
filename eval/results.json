@@ -1,0 +1,67 @@
+{
+  "personas": [
+    "priya",
+    "arjun",
+    "meera"
+  ],
+  "model": null,
+  "categorization": {
+    "rules_only": {
+      "accuracy": 0.8578,
+      "macro_f1": 0.7646,
+      "coverage": 0.8578
+    },
+    "hybrid": null
+  },
+  "detection": {
+    "large_charge": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "duplicate": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "category_spike": {
+      "precision": 0.3333,
+      "recall": 1.0,
+      "f1": 0.5
+    },
+    "subscriptions": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "unused_subscriptions": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "payday_trigger": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    }
+  },
+  "forecast": {
+    "model": {
+      "net_flow_ape": 1.0089,
+      "balance_mape": 0.0432,
+      "band_coverage": 0.805
+    },
+    "naive": {
+      "net_flow_ape": 6.1373,
+      "balance_mape": 0.4239,
+      "band_coverage": null
+    }
+  },
+  "calibration": {
+    "n": 102,
+    "mean_pred": 0.6833,
+    "observed": 0.7255,
+    "brier": 0.096
+  },
+  "grounding": null
+}

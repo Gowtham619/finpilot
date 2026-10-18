@@ -84,11 +84,16 @@ def generate(seed=0, months=12, end="2026-09", salary=62000, gym_used=False) -> 
             if kind == "monthly":
                 add(d(prm["day"]), name, cat, -max(1.0, rng.normal(prm["amt"], prm.get("sd", 0))))
             else:
-                mult = 3.0 if (p == spike_p and cat == "food_delivery") else 1.0
-                for day in rng.integers(1, dim + 1, rng.poisson(prm["per_month"] * mult)):
+                for day in rng.integers(1, dim + 1, rng.poisson(prm["per_month"])):
                     add(d(int(day)), name, cat, -max(50.0, rng.normal(prm["amt"], prm["sd"])))
         for day in rng.integers(1, 4, 3):  # payday behavior trigger
             add(d(int(day)), "SWIGGY", "food_delivery", -max(50.0, rng.normal(380, 90)), "payday")
+        if p == spike_p:
+            # Spike plant = a fixed number of extra orders, so it is anomalous for every seed.
+            fd = [(n, pr) for n, c, _, pr in STREAMS if c == "food_delivery"]
+            for k, day in enumerate(rng.integers(1, dim + 1, 14)):
+                name, prm = fd[k % len(fd)]
+                add(d(int(day)), name, "food_delivery", -max(50.0, rng.normal(prm["amt"], prm["sd"])))
         if p == big_p:
             add(d(17), "GLOBALTECH TRADING LTD", "shopping", -24000, "big")
         if p == dup_p:

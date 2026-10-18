@@ -199,3 +199,7 @@ def save_trace(s, run_id):
     for e in trace.since(run_id):
         s.add(TraceEvent(run_id=run_id, seq=e["seq"], agent=e["agent"], kind=e["kind"],
                          summary=e["summary"], data=e["data"]))
+
+
+def list_profiles(s):
+    return sorted(p.name for p in s.scalars(select(Profile)).all())

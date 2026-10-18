@@ -144,6 +144,15 @@ def create_app():
             db.add_goal(s, profile, name, target, deadline)
         return {"ok": True}
 
+    @app.post("/api/digest/{profile}")
+    def digest_now(profile: str = Depends(valid_profile)):
+        from . import digest
+        with db.session() as s:
+            df, _ = db.load_df(s, profile)
+        if df is None:
+            raise HTTPException(404, "no data")
+        return digest.deliver(profile)
+
     @app.post("/api/rerun/{profile}")
     def rerun(profile: str = Depends(valid_profile)):
         with db.session() as s:

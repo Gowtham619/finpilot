@@ -86,12 +86,10 @@ def test_duel_route():
     assert out["answer"]["winner"] == "b"
 
 
-def test_chat_route_fails_clearly_until_chat_agent_exists():
+def test_chat_route_answers_and_traces():
+    tr = Trace()
     cat = run({"type": "pipeline"}, raw_df()[0], Trace())["df"]
-    try:
-        from finpilot.agents import chat  # noqa: F401
-        pytest.skip("chat agent exists")
-    except ImportError:
-        pass
-    with pytest.raises(ImportError):
-        run({"type": "chat", "question": "hi"}, cat, Trace())
+    out = run({"type": "chat", "question": "what subscriptions do I pay for?"}, cat, tr)
+    ans = out["answer"]
+    assert ans["text"] and ans["tool_calls"][0]["name"] == "list_subscriptions"
+    assert {e["kind"] for e in tr.since("r1") if e["agent"] == "chat"} == {"tool", "result"}

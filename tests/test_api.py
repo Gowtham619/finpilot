@@ -136,7 +136,6 @@ def test_duel_after_load(client):
     assert r.status_code == 200 and r.json()["answer"]["winner"] == "b"
 
 
-@pytest.mark.skip(reason="chat agent arrives in Task 11")
 def test_chat_endpoint(client):
     client.post("/api/load/priya")
     r = client.post("/api/chat/priya", json={"question": "how much did I spend on food?"})
@@ -270,3 +269,18 @@ def test_duel_horizon_bounds(client):
         assert r.status_code == 400, h
     r = client.post("/api/duel/priya", json={"horizon": 30, "a": {"amount": 0}, "b": {"amount": 0}})
     assert r.status_code == 200
+
+
+def test_digest_now(client):
+    client.post("/api/load/priya")
+    out = client.post("/api/digest/priya").json()
+    assert "Key insight" in out["content"] and out["channel"] == "ui"
+    with db.session() as s:
+        assert db.list_digests(s, "priya")[0]["content"] == out["content"]
+
+
+def test_digest_endpoint_validates_profile_and_data(client):
+    assert client.post("/api/digest/nobody").status_code == 404
+    assert client.post("/api/digest/bad name").status_code == 400
+    with db.session() as s:
+        assert db.list_digests(s, "nobody") == []

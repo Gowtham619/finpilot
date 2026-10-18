@@ -1,19 +1,38 @@
 import threading
 import time
-from collections import defaultdict
+from collections import OrderedDict
+
+MAX_RUNS = 500
 
 
 class Trace:
-    def __init__(self):
-        self._ev = defaultdict(list)
+    """In-memory run traces. At most `max_runs` runs are retained; when over the cap, the oldest
+    finished runs are evicted first (a run still in progress is never evicted)."""
+
+    def __init__(self, max_runs=MAX_RUNS):
+        self._ev = OrderedDict()
         self._done = set()
         self._lock = threading.Lock()
+        self.max_runs = max_runs
+
+    def _evict(self):
+        if len(self._ev) <= self.max_runs:
+            return
+        for rid in [r for r in self._ev if r in self._done]:
+            if len(self._ev) <= self.max_runs:
+                break
+            del self._ev[rid]
+            self._done.discard(rid)
 
     def emit(self, run_id, agent, kind, summary, data=None):
         with self._lock:
-            ev = {"seq": len(self._ev[run_id]), "ts": time.time(), "agent": agent,
+            evs = self._ev.get(run_id)
+            if evs is None:
+                evs = self._ev[run_id] = []
+                self._evict()
+            ev = {"seq": len(evs), "ts": time.time(), "agent": agent,
                   "kind": kind, "summary": summary, "data": data or {}}
-            self._ev[run_id].append(ev)
+            evs.append(ev)
         return ev
 
     def since(self, run_id, n=0):
@@ -31,7 +50,12 @@ class Trace:
             self._done.add(run_id)
 
     def is_done(self, run_id):
-        return run_id in self._done
+        with self._lock:
+            return run_id in self._done
+
+    def __len__(self):
+        with self._lock:
+            return len(self._ev)
 
 
 trace = Trace()

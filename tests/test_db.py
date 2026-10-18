@@ -66,3 +66,35 @@ def test_trace_unknown_run_and_idempotent_finish():
     t.finish("r")
     t.finish("r")
     assert [e["kind"] for e in t.since("r")].count("done") == 1
+
+
+def test_trace_caps_runs_evicting_oldest_finished():
+    t = Trace(max_runs=3)
+    t.emit("live", "a", "start", "x")  # never finished: must survive
+    for i in range(6):
+        t.emit(f"r{i}", "a", "start", "x")
+        t.finish(f"r{i}")
+    assert len(t) == 3
+    assert t.since("live") and t.since("r5") and not t.since("r0")
+
+
+def test_trace_default_cap_is_500():
+    t = Trace()
+    for i in range(520):
+        t.emit(f"r{i}", "a", "start", "x")
+        t.finish(f"r{i}")
+    assert len(t) == 500 and not t.since("r0") and t.since("r519")
+
+
+def test_pace_alert_due_rules(s):
+    import datetime as dt
+    assert db.pace_alert_due(s, "p", "pace:dining:2026-09", 1000)
+    db.record_pace_alert(s, "p", "pace:dining:2026-09", 1000)
+    s.flush()
+    assert not db.pace_alert_due(s, "p", "pace:dining:2026-09", 5000)  # within 24h: never
+    assert db.pace_alert_due(s, "p", "pace:travel:2026-09", 10)       # other id
+    row = s.scalars(db.select(db.PaceAlert)).first()
+    row.created_at = row.created_at - dt.timedelta(hours=25)
+    s.flush()
+    assert not db.pace_alert_due(s, "p", "pace:dining:2026-09", 1200)  # grew only 20%
+    assert db.pace_alert_due(s, "p", "pace:dining:2026-09", 1300)      # grew 30%

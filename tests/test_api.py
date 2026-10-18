@@ -324,3 +324,66 @@ def test_body_cannot_override_route_type(client):
     assert r.status_code == 200 and "verdict" in r.json()["answer"]
     r = client.post("/api/duel/priya", json={"type": "afford", "amount": 5, "a": {"amount": 0}, "b": {"amount": 0}})
     assert r.status_code == 200 and "winner" in r.json()["answer"]
+
+
+# ---- final review fixes: C6 goals, I5 digests, I6 corrections, minor snapshots ----
+@pytest.mark.parametrize("body,msg", [
+    ({"name": "Trip", "target": 1000, "deadline": "notadate"}, "deadline"),
+    ({"name": "Trip", "target": float("nan"), "deadline": "2027-03-01"}, "finite"),
+    ({"name": "Trip", "target": 1e308, "deadline": "2027-03-01"}, "target"),
+    ({"name": "Trip", "target": 0, "deadline": "2027-03-01"}, "target"),
+    ({"name": "Trip", "target": -5, "deadline": "2027-03-01"}, "target"),
+    ({"name": "Trip", "target": "abc", "deadline": "2027-03-01"}, "target"),
+    ({"name": "Trip", "target": True, "deadline": "2027-03-01"}, "target"),
+    ({"name": "Trip", "target": 1000, "deadline": "9999-12-31"}, "deadline"),
+    ({"name": "Trip", "target": 1000, "deadline": "2020-01-01"}, "deadline"),
+    ({"name": "   ", "target": 1000, "deadline": "2027-03-01"}, "name"),
+    ({"name": "x" * 61, "target": 1000, "deadline": "2027-03-01"}, "name"),
+    ({"name": 5, "target": 1000, "deadline": "2027-03-01"}, "name"),
+    ({"target": 1000, "deadline": "2027-03-01"}, "name"),
+    ({"name": "Trip", "target": 1000}, "deadline"),
+])
+def test_goal_validation(client, body, msg):
+    client.post("/api/load/priya")
+    r = client.post("/api/goals/priya", content=json.dumps(body, allow_nan=True),
+                    headers={"Content-Type": "application/json"})
+    assert r.status_code == 400 and msg in r.json()["detail"], r.text
+    assert client.get("/api/goals/priya").json() == []
+
+
+def test_goal_name_is_stripped_and_deadline_normalized(client):
+    client.post("/api/load/priya")
+    r = client.post("/api/goals/priya", json={"name": "  Bike 150cc ", "target": "90000", "deadline": "2027-03-01T10:00"})
+    assert r.status_code == 200
+    g = client.get("/api/goals/priya").json()[0]
+    assert g["name"] == "Bike 150cc" and g["target"] == 90000 and g["deadline"] == "2027-03-01"
+
+
+def test_goal_snapshots_upsert_by_date(client):
+    client.post("/api/load/priya")
+    client.post("/api/goals/priya", json={"name": "Trip", "target": 300000, "deadline": "2027-03-01"})
+    client.post("/api/rerun/priya")
+    client.post("/api/rerun/priya")
+    hist = client.get("/api/goals/priya").json()[0]["history"]
+    assert len(hist) == 1 and hist[0]["on"] == "2026-09-30"
+
+
+def test_digests_endpoint(client):
+    assert client.get("/api/digests/bad name").status_code == 400
+    assert client.get("/api/digests/nobody").json() == []
+    client.post("/api/load/priya")
+    sent = client.post("/api/digest/priya").json()
+    got = client.get("/api/digests/priya").json()
+    assert got[0]["content"] == sent["content"] and got[0]["channel"] == "ui" and got[0]["sent"] is False
+
+
+def test_correction_normalizes_merchant_and_rejects_empty(client):
+    client.post("/api/load/priya")
+    r = client.post("/api/correct/priya", json={"merchant": "upi-blue tokai coffee BLR", "category": "dining"})
+    assert r.status_code == 200
+    with db.session() as sess:
+        assert db.corrections(sess, "priya")["BLUE TOKAI COFFEE"] == "dining"
+    for m in ("", "  ", "UPI", None, 5):
+        assert client.post("/api/correct/priya", json={"merchant": m, "category": "dining"}).status_code == 400
+    with db.session() as sess:
+        assert "" not in db.corrections(sess, "priya")

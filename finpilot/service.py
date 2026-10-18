@@ -67,7 +67,7 @@ def _persist(profile):
                 if "p_met" not in g:  # error entry {"name", "error"}
                     continue
                 if g["name"] in by_name:
-                    db.append_goal_snapshot(s, by_name[g["name"]], _clean(
+                    db.upsert_goal_snapshot(s, by_name[g["name"]], _clean(
                         {"on": str(state["df"]["date"].max().date()), "p_met": g["p_met"],
                          "shortfall_p50": g["shortfall_p50"]}))
     return save
@@ -168,6 +168,44 @@ def _months(o):
         return int(o.get("financed_months") or 0)
     except (TypeError, ValueError):
         raise ValueError("financed_months must be a whole number")
+
+
+MAX_GOAL_TARGET = 1e12
+
+
+def validate_goal(name, target, deadline, last_date=None):
+    """Returns (name, target, deadline_str) or raises ValueError. The deadline must lie between one year
+    before and ten years after the data's last date (today when there is no data yet)."""
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 60:
+        raise ValueError("goal name must be 1-60 characters")
+    if isinstance(target, bool):
+        raise ValueError("target must be a number")
+    target = _num(target, "target")
+    if not 0 < target <= MAX_GOAL_TARGET:
+        raise ValueError(f"target must be greater than 0 and at most {MAX_GOAL_TARGET:,.0f}")
+    try:
+        d = pd.Timestamp(deadline)
+    except Exception:
+        raise ValueError(f"deadline is not a valid date: {deadline!r}")
+    if pd.isna(d):
+        raise ValueError(f"deadline is not a valid date: {deadline!r}")
+    d = d.normalize()
+    ref = pd.Timestamp(last_date).normalize() if last_date is not None else pd.Timestamp.today().normalize()
+    lo, hi = ref - pd.DateOffset(years=1), ref + pd.DateOffset(years=10)
+    if not lo <= d <= hi:
+        raise ValueError(f"deadline must be between {lo.date()} and {hi.date()}")
+    return name.strip(), target, str(d.date())
+
+
+def add_goal(profile, body):
+    check_profile(profile)
+    if not isinstance(body, dict):
+        raise ValueError("goal needs name, target (number) and deadline")
+    with db.session() as s:
+        df, _ = db.load_df(s, profile)
+        last = df["date"].max() if df is not None else None
+        name, target, deadline = validate_goal(body.get("name"), body.get("target"), body.get("deadline"), last)
+        db.add_goal(s, profile, name, target, deadline)
 
 
 def request(profile, req):

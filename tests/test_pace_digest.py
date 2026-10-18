@@ -261,3 +261,24 @@ def test_scheduler_jobs_coalesce_and_grace():
     from finpilot.scheduler import build_scheduler
     for j in build_scheduler().get_jobs():
         assert j.coalesce is True and j.misfire_grace_time == 3600
+
+
+def test_pace_job_dedupes_on_stable_id_when_text_changes(loaded, monkeypatch):
+    """The alert text changes daily (day, amounts) but the id pace:{category}:{month} does not."""
+    from finpilot import scheduler
+    a = {"id": "pace:dining:2026-09", "category": "dining", "over_pct": 50.0, "day": 5,
+         "mtd": 4000.0, "expected": 3000.0}
+    monkeypatch.setattr("finpilot.engines.pace.pace_alerts", lambda d, t: [dict(a)])
+    before = len(_job_digests())
+    scheduler.pace_check_job()
+    a.update(day=6, mtd=4100.0, over_pct=36.7)  # new text, same id, within 24h
+    scheduler.pace_check_job()
+    assert len(_job_digests()) == before + 1
+    with db.session() as s:  # age the ledger past 24h
+        for row in s.scalars(db.select(db.PaceAlert)).all():
+            row.created_at = row.created_at - pd.Timedelta(hours=25)
+    scheduler.pace_check_job()  # overage 1100 vs 1000: +10%, not >25%
+    assert len(_job_digests()) == before + 1
+    a.update(day=9, mtd=4400.0)  # overage 1400: +40%
+    scheduler.pace_check_job()
+    assert len(_job_digests()) == before + 2

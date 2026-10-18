@@ -105,7 +105,19 @@ function renderState(st) {
     gl.append(c);
   });
 }
-async function refresh() { renderState(await api(`/api/state/${encodeURIComponent(profile)}`)); }
+async function loadDigests() {
+  const box = $("#digests"); box.replaceChildren();
+  (await api(`/api/digests/${encodeURIComponent(profile)}`)).slice(0, 5).forEach((d) => {
+    const c = el("div", "card");
+    c.append(el("small", "", `${d.created_at} · ${d.channel}${d.sent ? " (emailed)" : ""}`),
+             el("pre", "", d.content));
+    box.append(c);
+  });
+}
+async function refresh() {
+  renderState(await api(`/api/state/${encodeURIComponent(profile)}`));
+  loadDigests().catch(fail);
+}
 
 function begin(p) { profile = p.profile; follow(p.run_id, () => { history.replaceState(null, "", `?profile=${encodeURIComponent(p.profile)}`); refresh(); }); }
 
@@ -116,9 +128,11 @@ async function init() {
   $("#loadBtn").onclick = () => api(`/api/load/${$("#persona").value}`, {}).then(begin).catch(fail);
   $("#upForm").onsubmit = (e) => {
     e.preventDefault();
-    const fd = new FormData(e.target); fd.append("profile", profile);
+    const fd = new FormData(e.target);  // includes the profile-name field (validated server side)
     api("/api/upload", null, fd).then(begin).catch(fail);
   };
+  $("#digestBtn").onclick = () => api(`/api/digest/${encodeURIComponent(profile)}`, {})
+    .then(loadDigests).catch(fail);
   $("#afForm").onsubmit = (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));

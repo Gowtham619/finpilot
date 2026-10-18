@@ -137,11 +137,9 @@ def create_app():
     @app.post("/api/goals/{profile}")
     def goals_add(body: dict, profile: str = Depends(valid_profile)):
         try:
-            name, target, deadline = str(body["name"]), float(body["target"]), str(body["deadline"])
-        except (KeyError, TypeError, ValueError):
-            raise HTTPException(400, "goal needs name, target (number) and deadline")
-        with db.session() as s:
-            db.add_goal(s, profile, name, target, deadline)
+            service.add_goal(profile, body)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         return {"ok": True}
 
     @app.post("/api/digest/{profile}")
@@ -152,6 +150,11 @@ def create_app():
         if df is None:
             raise HTTPException(404, "no data")
         return digest.deliver(profile)
+
+    @app.get("/api/digests/{profile}")
+    def digests_list(profile: str = Depends(valid_profile)):
+        with db.session() as s:
+            return db.list_digests(s, profile)[:20]
 
     @app.post("/api/rerun/{profile}")
     def rerun(profile: str = Depends(valid_profile)):
@@ -164,13 +167,18 @@ def create_app():
     @app.post("/api/correct/{profile}")
     def correct(body: dict, profile: str = Depends(valid_profile)):
         from .config import CATEGORIES
+        from .engines.categorize import normalize_merchant
         if body.get("category") not in CATEGORIES:
             raise HTTPException(400, "unknown category")
+        raw_m = body.get("merchant")
+        merchant = normalize_merchant(raw_m) if isinstance(raw_m, str) else ""
+        if not merchant:
+            raise HTTPException(400, "merchant is required (e.g. 'BLUE TOKAI COFFEE' or a statement description)")
         with db.session() as s:
-            db.add_correction(s, profile, str(body.get("merchant", "")).upper(), body["category"])
             df, opening = db.load_df(s, profile)
-        if df is None:
-            raise HTTPException(404, "no data")
+            if df is None:
+                raise HTTPException(404, "no data")
+            db.add_correction(s, profile, merchant, body["category"])
         raw = df[["date", "description", "amount"]]
         return {"run_id": service.start_pipeline(profile, raw, opening)}
 

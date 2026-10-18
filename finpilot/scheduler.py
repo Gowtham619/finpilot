@@ -32,9 +32,12 @@ def pace_check_job():
                 df, _ = db.load_df(s, p)
             if df is None:
                 continue
-            alerts = pace.pace_alerts(df, _today())
+            today = _today()
+            alerts = pace.pace_alerts(df, today)
             if alerts:
                 a = max(alerts, key=lambda x: x["mtd"] - x["expected"])
+                aid = a.get("id") or f"pace:{a['category']}:{pd.Timestamp(today).to_period('M')}"
+                over = float(a["mtd"] - a["expected"])
                 cat = a["category"].replace("_", " ")
                 if a.get("new_spend") or a.get("over_pct") is None:
                     body = f"Pace alert: new spending in {cat} this month: ₹{a['mtd']:,.0f} by day {a['day']}."
@@ -42,11 +45,12 @@ def pace_check_job():
                     body = (f"Pace alert: {cat} spend is {a['over_pct']}% above your usual by day {a['day']} "
                             f"(₹{a['mtd']:,.0f} vs ₹{a['expected']:,.0f}).")
                 with db.session() as s:
-                    if db.digest_recent(s, p, body):
-                        continue  # same alert already raised in the last 24h
+                    if not db.pace_alert_due(s, p, aid, over):
+                        continue  # same alert id within 24h, or the overage has not grown by >25%
                 sent = digest.send_email(f"FinPilot pace alert: {p}", body)
                 with db.session() as s:
                     db.save_digest(s, p, "email" if sent else "ui", body, sent)
+                    db.record_pace_alert(s, p, aid, over)
         except Exception:
             log.exception("pace check failed for %s", p)
 

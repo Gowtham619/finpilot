@@ -35,6 +35,7 @@ canvas{max-height:300px}
   <h1>FinPilot</h1>
   <select id="persona"></select><button class="act" id="loadBtn">Load persona</button>
   <form id="upForm" style="display:flex;gap:6px;align-items:center">
+    <input name="profile" value="me" pattern="[A-Za-z0-9_\-]{1,40}" style="width:90px" title="Profile name for this upload (letters, digits, _ or -)" required>
     <input type="file" name="file" accept=".csv" required>
     <input name="opening_balance" type="number" value="0" style="width:110px" title="Opening balance">
     <button class="act">Upload CSV</button>
@@ -49,6 +50,10 @@ canvas{max-height:300px}
       <p id="overview"></p><p id="narrative" style="color:var(--mute)"></p>
       <canvas id="cSpend"></canvas><canvas id="cFore"></canvas>
       <h3>Findings</h3><div id="findings"></div>
+      <h3>Digest</h3>
+      <div class="card"><button class="act" id="digestBtn" type="button">Send digest now</button>
+        <small style="color:var(--mute)"> Emailed only if SMTP is configured; otherwise stored here.</small>
+        <div id="digests"></div></div>
     </div>
     <div id="afford" class="tab">
       <h3>Can I afford it?</h3>

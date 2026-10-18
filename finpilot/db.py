@@ -73,6 +73,16 @@ class Digest(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
 
 
+class PaceAlert(Base):
+    """Dedupe ledger for pace alerts, keyed on the stable alert id pace:{category}:{month}."""
+    __tablename__ = "pace_alerts"
+    pk: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile: Mapped[str] = mapped_column(String, index=True)
+    alert_id: Mapped[str] = mapped_column(String, index=True)
+    overage: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
+
+
 class TraceEvent(Base):
     __tablename__ = "trace_events"
     pk: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -162,6 +172,10 @@ def load_forecast(s, profile): return _get(s, profile, "forecast", None)
 
 
 def add_goal(s, profile, name, target, deadline):
+    """Callers validate (service.validate_goal); this only refuses values that cannot be stored sanely."""
+    t, d = float(target), pd.Timestamp(deadline)
+    if not (t == t and abs(t) != float("inf")) or pd.isna(d):
+        raise ValueError("goal target must be finite and deadline a valid date")
     s.add(Goal(profile=profile, name=name, target=float(target),
                deadline=pd.Timestamp(deadline).date(), history=[]))
 
@@ -174,6 +188,13 @@ def list_goals(s, profile):
 def append_goal_snapshot(s, pk, snapshot):
     g = s.get(Goal, pk)
     g.history = list(g.history or []) + [snapshot]
+
+
+def upsert_goal_snapshot(s, pk, snapshot):
+    """One snapshot per `on` date: a rerun on the same data replaces it instead of appending."""
+    g = s.get(Goal, pk)
+    hist = [h for h in (g.history or []) if not (isinstance(h, dict) and h.get("on") == snapshot.get("on"))]
+    g.history = hist + [snapshot]
 
 
 def add_correction(s, profile, merchant, category):
@@ -205,8 +226,21 @@ def list_profiles(s):
     return sorted(p.name for p in s.scalars(select(Profile)).all())
 
 
-def digest_recent(s, profile, content, hours=24):
-    """True if an identical digest row for this profile was created within the last `hours`."""
-    since = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(hours=hours)
-    return s.scalars(select(Digest).where(Digest.profile == profile, Digest.content == content,
-                                          Digest.created_at >= since)).first() is not None
+def _utcnow():
+    return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+
+
+def pace_alert_due(s, profile, alert_id, overage, hours=24, growth=0.25):
+    """At most one alert per (profile, alert_id) per `hours`; after that, re-alert only if the overage
+    grew by more than `growth` since the last alert for that id."""
+    last = s.scalars(select(PaceAlert).where(PaceAlert.profile == profile, PaceAlert.alert_id == alert_id)
+                     .order_by(PaceAlert.pk.desc())).first()
+    if last is None:
+        return True
+    if last.created_at >= _utcnow() - dt.timedelta(hours=hours):
+        return False
+    return overage > last.overage * (1 + growth)
+
+
+def record_pace_alert(s, profile, alert_id, overage):
+    s.add(PaceAlert(profile=profile, alert_id=alert_id, overage=float(overage)))

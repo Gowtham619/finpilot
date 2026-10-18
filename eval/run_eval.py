@@ -205,6 +205,9 @@ METHODOLOGY = [
     "Calibration origins overlap (7-day stride, 30-day windows) and sit mid-month rather than month-aligned, so the effective n is far smaller than n.",
     "A flat-balance forecast scores exactly 1.0 on net-flow APE, so that metric is reported only for completeness.",
     "Pinball loss and month-end MAE are divided by the persona's mean monthly spend; baselines are point forecasts used as all three quantiles.",
+    "The advice backtest assumes the user complied with every recommendation and counts only recurring-cancel and category-excess savings, so it is an optimistic upper bound on avoided spend, not a forecast of behaviour.",
+    "The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this favors neither side strongly but is a design choice.",
+    "The ablation is a single run at temperature 0 over 3 synthetic personas (only when run with an LLM); differences are indicative, not statistically tested.",
 ]
 
 
@@ -235,6 +238,21 @@ def render_md(res):
              "", "| Predicted bin | Count | Mean predicted | Observed |", "|---|---|---|---|"]
     rows += [f"| {b['range']} | {b['count']} | {b['mean_pred'] if b['mean_pred'] is not None else '-'} | "
              f"{b['observed'] if b['observed'] is not None else '-'} |" for b in cal["bins"]]
+    ab = res.get("ablation")
+    rows += ["", "## Ablation: LLM-only vs rules-only vs hybrid"]
+    if ab:
+        ac = ab["categorization"]
+        rows += ["| Task | LLM-only | Rules-only | Hybrid (FinPilot) |", "|---|---|---|---|",
+                 f"| Categorization accuracy | {ac['llm_only']['accuracy']} | {ac['rules_only']['accuracy']} | {ac['hybrid']['accuracy']} |",
+                 f"| Forecast net-flow APE | {ab['forecast']['llm_only']['net_flow_ape']} | - | {_fmt(f['model']['net_flow_ape'])} |",
+                 f"| Advice with ungrounded/incorrect numbers | {ab['advice']['llm_only']['hallucination_rate']} | - | 0 after verifier (see grounding) |"]
+    else:
+        rows.append("n/a (--no-llm)")
+    bt = res.get("backtest")
+    if bt:
+        rows += ["", "## Advice backtest (last 90 days, assumes advice followed; upper bound)",
+                 "| Persona | Potential savings | % of spend | Cancel precision |", "|---|---|---|---|"]
+        rows += [f"| {n} | \u20b9{b['potential_savings']:,.0f} | {b['pct_of_spend'] * 100:.1f}% | {b['cancel_precision']} |" for n, b in bt.items()]
     g = res.get("grounding")
     rows += ["", "## Grounding", (f"first-pass grounding rate {g['first_pass_grounding_rate']} "
                                   f"({g['first_pass_caught']} caught of {g['recs']}), final verified {g['final_verified']}" if g else "n/a (--no-llm)"),
@@ -263,6 +281,12 @@ def main(argv=None):
     res["calibration"] = eval_calibration(list(personas.values()))
     res["methodology"] = METHODOLOGY
     res["grounding"] = eval_grounding(personas["priya"], llm) if use_llm else None
+    from eval import backtest  # lazy: backtest/ablation import from this module
+    res["backtest"] = {n: backtest.run(p) for n, p in personas.items()}
+    res["ablation"] = None
+    if use_llm:
+        from eval import ablation
+        res["ablation"] = ablation.run(personas, llm)
     (OUT / "results.json").write_text(json.dumps(res, indent=2))
     (OUT / "results.md").write_text(render_md(res))
     print(render_md(res))

@@ -51,3 +51,7 @@ def test_run_eval_no_llm_smoke(tmp_path, monkeypatch):
     md = (tmp_path / "results.md").read_text()
     assert "Methodology and limitations" in md and "trailing-30d-mean" in md
     assert (tmp_path / "results.json").exists()
+    assert res.get("ablation") is None
+    bt = res["backtest"]
+    assert set(bt) == set(res["personas"]) and all(b["potential_savings"] > 0 for b in bt.values())
+    assert "Advice backtest" in md and "n/a (--no-llm)" in md

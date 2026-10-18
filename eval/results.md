@@ -41,6 +41,16 @@ Event: balance falls >10% below its starting level within 30 days. n=102 (overla
 | 0.6-0.8 | 7 | 0.7174 | 1.0 |
 | 0.8-1.0 | 58 | 0.9741 | 0.9655 |
 
+## Ablation: LLM-only vs rules-only vs hybrid
+n/a (--no-llm)
+
+## Advice backtest (last 90 days, assumes advice followed; upper bound)
+| Persona | Potential savings | % of spend | Cancel precision |
+|---|---|---|---|
+| priya | ₹8,496 | 5.0% | 1.0 |
+| arjun | ₹18,813 | 12.4% | 1.0 |
+| meera | ₹3,612 | 2.3% | 1.0 |
+
 ## Grounding
 n/a (--no-llm)
 
@@ -54,3 +64,6 @@ n/a (--no-llm)
 - Calibration origins overlap (7-day stride, 30-day windows) and sit mid-month rather than month-aligned, so the effective n is far smaller than n.
 - A flat-balance forecast scores exactly 1.0 on net-flow APE, so that metric is reported only for completeness.
 - Pinball loss and month-end MAE are divided by the persona's mean monthly spend; baselines are point forecasts used as all three quantiles.
+- The advice backtest assumes the user complied with every recommendation and counts only recurring-cancel and category-excess savings, so it is an optimistic upper bound on avoided spend, not a forecast of behaviour.
+- The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this favors neither side strongly but is a design choice.
+- The ablation is a single run at temperature 0 over 3 synthetic personas (only when run with an LLM); differences are indicative, not statistically tested.

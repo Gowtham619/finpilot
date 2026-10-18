@@ -471,7 +471,81 @@
     "precision_recall returns 1.0 for an empty prediction set by convention.",
     "Calibration origins overlap (7-day stride, 30-day windows) and sit mid-month rather than month-aligned, so the effective n is far smaller than n.",
     "A flat-balance forecast scores exactly 1.0 on net-flow APE, so that metric is reported only for completeness.",
-    "Pinball loss and month-end MAE are divided by the persona's mean monthly spend; baselines are point forecasts used as all three quantiles."
+    "Pinball loss and month-end MAE are divided by the persona's mean monthly spend; baselines are point forecasts used as all three quantiles.",
+    "The advice backtest assumes the user complied with every recommendation and counts only recurring-cancel and category-excess savings, so it is an optimistic upper bound on avoided spend, not a forecast of behaviour.",
+    "The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this favors neither side strongly but is a design choice.",
+    "The ablation is a single run at temperature 0 over 3 synthetic personas (only when run with an LLM); differences are indicative, not statistically tested."
   ],
-  "grounding": null
+  "grounding": null,
+  "backtest": {
+    "priya": {
+      "cutoff": "2026-07-02",
+      "followed": [
+        {
+          "action": "Cut back on shopping",
+          "saved": 3098.5
+        },
+        {
+          "action": "Cancel CULT FIT GYM",
+          "saved": 4500.0
+        },
+        {
+          "action": "Cancel HOTSTAR",
+          "saved": 897.0
+        }
+      ],
+      "potential_savings": 8495.5,
+      "pct_of_spend": 0.0496,
+      "cancel_precision": 1.0
+    },
+    "arjun": {
+      "cutoff": "2026-07-02",
+      "followed": [
+        {
+          "action": "Cut back on dining",
+          "saved": 9583.51
+        },
+        {
+          "action": "Cut back on health",
+          "saved": 1413.81
+        },
+        {
+          "action": "Cut back on food_delivery",
+          "saved": 2418.98
+        },
+        {
+          "action": "Cancel CULT FIT GYM",
+          "saved": 4500.0
+        },
+        {
+          "action": "Cancel HOTSTAR",
+          "saved": 897.0
+        }
+      ],
+      "potential_savings": 18813.3,
+      "pct_of_spend": 0.1239,
+      "cancel_precision": 1.0
+    },
+    "meera": {
+      "cutoff": "2026-07-02",
+      "followed": [
+        {
+          "action": "Cut back on dining",
+          "saved": 439.02
+        },
+        {
+          "action": "Cut back on health",
+          "saved": 2276.47
+        },
+        {
+          "action": "Cancel HOTSTAR",
+          "saved": 897.0
+        }
+      ],
+      "potential_savings": 3612.49,
+      "pct_of_spend": 0.0227,
+      "cancel_precision": 1.0
+    }
+  },
+  "ablation": null
 }

@@ -63,10 +63,18 @@ with the correction → otherwise the recommendation is dropped and logged. The 
 shows a "Why?" panel per recommendation with the triggering evidence and the
 verifier result.
 
-## 6. Action-ready advice
+## 6. Signature demo features
 
-For each unused subscription: drafted cancellation message and the monthly/annual
-saving. Delivered as copyable text (no auto-sending anything on the user's behalf).
+- **Live agent trace panel.** Each graph node emits events (agent, tool call,
+  result summary, duration) streamed to the UI via SSE. The Verifier's catches
+  appear as visible "caught / corrected" badges. Events are persisted so a run
+  can be replayed.
+- **Decision duel.** User enters two options (e.g. "buy ₹80k laptop now" vs
+  "wait 2 months", or two savings plans). Both run through the simulator; UI
+  shows side-by-side fan charts, P(overdraft), goal delay, and a winner with
+  stated reasons grounded in the numbers.
+- **Hosted demo.** Deployed instance with a "Load persona" button that seeds a
+  complete dataset and runs the pipeline in one click. LLM key held server-side.
 
 ## 7. Data model (SQLite)
 
@@ -75,11 +83,11 @@ snapshots per run so advice adapts when behind/ahead), `digests`, `corrections`.
 
 ## 8. Delivery and UI
 
-- APScheduler weekly digest job + mid-month pace-alert job. Channels: Telegram
-  bot (primary; reply with a question routes to Chat) and SMTP email. If neither
-  is configured, digests are stored and shown in the UI. `--dry-run` for demos.
+- APScheduler weekly digest job + mid-month pace-alert job. Channels: SMTP
+  email. If it
+  is not configured, digests are stored and shown in the UI. `--dry-run` for demos.
 - Pages: upload, dashboard (category spend, anomalies, forecast fan chart),
-  "Can I afford…?" simulator, goals, recommendations with "Why?", chat.
+  "Can I afford…?" simulator, decision duel, live trace, goals, recommendations with "Why?", chat.
 
 ## 9. Self-evaluation (results committed to `eval/results.json` and README)
 
@@ -97,6 +105,12 @@ subscriptions, planted behavior triggers, and held-out future months.
 | Grounding | % of claims verified; hallucinated claims caught |
 | **Ablation** | LLM-only vs rules-only vs hybrid on the above |
 | **Advice backtest** | replay history as if advice were followed 3 months ago; report balance delta |
+
+**Real-data check:** categorization and anomaly detection are also run on a
+public bank-transaction dataset (chosen at build time; licence noted). Results
+are reported in a separate table, clearly labelled real vs synthetic. Real data
+has no planted ground truth, so anomaly results are reviewed by sampling and
+categorization uses the dataset's own labels where present.
 
 `make eval` regenerates all numbers; CI runs a small eval with the LLM stubbed.
 
@@ -119,12 +133,12 @@ pipeline test, one verifier test with a deliberately wrong claim.
 4. Forecast + Monte Carlo + simulator + eval
 5. Advisor + Verifier + audit trail + grounding eval
 6. LangGraph wiring + FastAPI UI
-7. Goals, Chat, scheduler/digest
-8. Ablation table + advice backtest
-9. **Cut line — drop in this order if short on time:** action-ready drafts, Telegram (keep email/UI), behavior triggers, pace alerts.
-10. README, design-decisions note, results, demo script
+7. Goals, Chat, scheduler/digest, trace panel, decision duel
+8. Ablation table + advice backtest + real-data check
+9. **Cut line — drop in this order if short on time:** behavior triggers, pace alerts, real-data check (never the trace panel or duel).
+10. Deploy hosted demo, README, design-decisions note, results, 60-second demo script
 
 ## 13. Out of scope
 
-Bank integrations, auth/multi-user, real payments, auto-sending cancellations,
+Bank integrations, auth/multi-user, real payments, Telegram, drafted cancellation messages,
 ML-trained models.

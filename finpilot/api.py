@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import pathlib
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from sse_starlette.sse import EventSourceResponse
+
+from . import db, service
+from .trace import trace
+
+HERE = pathlib.Path(__file__).parent
+
+
+def create_app():
+    @asynccontextmanager
+    async def lifespan(app):
+        db.init()
+        if os.getenv("FINPILOT_AUTOSEED") == "1":
+            service.autoseed("priya")
+        sched = None
+        if os.getenv("FINPILOT_SCHEDULER") == "1":
+            from .scheduler import build_scheduler
+            sched = build_scheduler()
+            sched.start()
+        yield
+        if sched:
+            sched.shutdown(wait=False)
+
+    app = FastAPI(title="FinPilot", lifespan=lifespan)
+    app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
+
+    @app.get("/")
+    def index():
+        return FileResponse(HERE / "templates" / "index.html")
+
+    @app.get("/api/personas")
+    def personas():
+        from eval.generate import PERSONAS
+        return list(PERSONAS)
+
+    @app.post("/api/load/{persona}")
+    def load(persona: str):
+        from eval.generate import PERSONAS
+        if persona not in PERSONAS:
+            raise HTTPException(404, "unknown persona")
+        profile, run_id = service.load_persona(persona)
+        return {"profile": profile, "run_id": run_id}
+
+    @app.post("/api/upload")
+    async def upload(profile: str = Form(...), opening_balance: float = Form(0.0), file: UploadFile = File(...)):
+        try:
+            df = service.parse_csv(await file.read())
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"profile": profile, "run_id": service.start_pipeline(profile, df, opening_balance)}
+
+    @app.get("/api/state/{profile}")
+    def state(profile: str):
+        return service.state(profile)
+
+    @app.get("/trace/{run_id}")
+    def trace_json(run_id: str):
+        return trace.since(run_id)
+
+    @app.get("/trace/{run_id}/stream")
+    async def trace_stream(run_id: str):
+        async def gen():
+            n = 0
+            waited = 0.0
+            while True:
+                evs = trace.since(run_id, n)
+                for e in evs:
+                    n += 1
+                    yield {"event": "trace", "data": json.dumps(e, default=str)}
+                if trace.is_done(run_id) and not trace.since(run_id, n):
+                    break
+                if n == 0 and not evs:  # unknown run: do not wait forever
+                    waited += 0.25
+                    if waited >= 2.0:
+                        break
+                await asyncio.sleep(0.25)
+        return EventSourceResponse(gen())
+
+    def _ask(profile, req):
+        try:
+            run_id, answer = service.request(profile, req)
+        except KeyError as e:  # malformed request body (KeyError is also a LookupError)
+            raise HTTPException(400, f"missing field {e}")
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"run_id": run_id, "answer": answer}
+
+    @app.post("/api/afford/{profile}")
+    def afford(profile: str, body: dict):
+        return _ask(profile, {"type": "afford", **body})
+
+    @app.post("/api/duel/{profile}")
+    def duel(profile: str, body: dict):
+        return _ask(profile, {"type": "duel", **body})
+
+    @app.post("/api/chat/{profile}")
+    def chat(profile: str, body: dict):
+        return _ask(profile, {"type": "chat", "question": str(body.get("question", ""))})
+
+    @app.get("/api/goals/{profile}")
+    def goals_get(profile: str):
+        with db.session() as s:
+            return db.list_goals(s, profile)
+
+    @app.post("/api/goals/{profile}")
+    def goals_add(profile: str, body: dict):
+        try:
+            name, target, deadline = str(body["name"]), float(body["target"]), str(body["deadline"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(400, "goal needs name, target (number) and deadline")
+        with db.session() as s:
+            db.add_goal(s, profile, name, target, deadline)
+        return {"ok": True}
+
+    @app.post("/api/rerun/{profile}")
+    def rerun(profile: str):
+        with db.session() as s:
+            df, opening = db.load_df(s, profile)
+        if df is None:
+            raise HTTPException(404, "no data")
+        return {"run_id": service.start_pipeline(profile, df[["date", "description", "amount"]], opening)}
+
+    @app.post("/api/correct/{profile}")
+    def correct(profile: str, body: dict):
+        from .config import CATEGORIES
+        if body.get("category") not in CATEGORIES:
+            raise HTTPException(400, "unknown category")
+        with db.session() as s:
+            db.add_correction(s, profile, str(body.get("merchant", "")).upper(), body["category"])
+            df, opening = db.load_df(s, profile)
+        if df is None:
+            raise HTTPException(404, "no data")
+        raw = df[["date", "description", "amount"]]
+        return {"run_id": service.start_pipeline(profile, raw, opening)}
+
+    return app
+
+
+app = create_app()

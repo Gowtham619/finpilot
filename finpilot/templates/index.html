@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FinPilot</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+:root{--bg:#0f1420;--panel:#171e2e;--ink:#e8ecf4;--mute:#8b95ab;--acc:#5eead4;--bad:#f87171;--ok:#4ade80;--warn:#fbbf24}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
+header{display:flex;gap:12px;align-items:center;padding:12px 20px;border-bottom:1px solid #263049;flex-wrap:wrap}
+header h1{margin:0;font-size:20px;color:var(--acc)}
+main{display:grid;grid-template-columns:1fr 340px;gap:16px;padding:16px 20px}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+.panel{background:var(--panel);border-radius:10px;padding:14px}
+nav button{background:none;border:0;color:var(--mute);padding:8px 12px;cursor:pointer;font:inherit}
+nav button.on{color:var(--acc);border-bottom:2px solid var(--acc)}
+.tab{display:none}.tab.on{display:block}
+input,select,button.act{background:#0f1420;color:var(--ink);border:1px solid #2c3854;border-radius:6px;padding:7px 10px;font:inherit}
+button.act{background:var(--acc);color:#04201c;border:0;cursor:pointer;font-weight:600}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
+.kpi{background:#0f1420;border-radius:8px;padding:10px}.kpi b{display:block;font-size:20px}.kpi span{color:var(--mute);font-size:12px}
+.card{background:#0f1420;border-radius:8px;padding:10px;margin:8px 0}
+.card details{margin-top:6px;color:var(--mute);font-size:13px}
+.tag{font-size:11px;padding:2px 6px;border-radius:4px;background:#263049;margin-right:6px}
+.tag.ok{background:#14532d}.tag.bad{background:#7f1d1d}
+#trace{max-height:78vh;overflow:auto;font-size:13px}
+.ev{border-left:3px solid #2c3854;padding:4px 8px;margin:6px 0}
+.ev.caught{border-color:var(--bad)}.ev.corrected,.ev.ok{border-color:var(--ok)}.ev.dropped{border-color:var(--warn)}
+.ev small{color:var(--mute)}
+canvas{max-height:300px}
+</style>
+</head>
+<body>
+<header>
+  <h1>FinPilot</h1>
+  <select id="persona"></select><button class="act" id="loadBtn">Load persona</button>
+  <form id="upForm" style="display:flex;gap:6px;align-items:center">
+    <input type="file" name="file" accept=".csv" required>
+    <input name="opening_balance" type="number" value="0" style="width:110px" title="Opening balance">
+    <button class="act">Upload CSV</button>
+  </form>
+  <span id="err" style="color:var(--bad)"></span>
+</header>
+<main>
+  <section class="panel">
+    <nav id="nav"></nav>
+    <div id="dashboard" class="tab on">
+      <div class="kpis" id="kpis"></div>
+      <p id="overview"></p><p id="narrative" style="color:var(--mute)"></p>
+      <canvas id="cSpend"></canvas><canvas id="cFore"></canvas>
+      <h3>Findings</h3><div id="findings"></div>
+    </div>
+    <div id="afford" class="tab">
+      <h3>Can I afford it?</h3>
+      <form id="afForm"><input name="amount" type="number" placeholder="Amount" required>
+        <input name="date" type="date"><input name="financed_months" type="number" min="0" placeholder="EMI months" style="width:120px">
+        <button class="act">Simulate</button></form>
+      <div id="afOut"></div>
+    </div>
+    <div id="duel" class="tab">
+      <h3>Decision duel</h3>
+      <form id="duForm">
+        <fieldset><legend>Option A</legend><input name="an" value="Buy now"><input name="aa" type="number" placeholder="Amount" required><input name="ad" type="date"></fieldset>
+        <fieldset><legend>Option B</legend><input name="bn" value="Wait 2 months"><input name="ba" type="number" placeholder="Amount" required><input name="bd" type="date" required></fieldset>
+        <button class="act">Run both futures</button></form>
+      <div id="duOut"></div><canvas id="cDuelA"></canvas><canvas id="cDuelB"></canvas>
+    </div>
+    <div id="recs" class="tab"><h3>Recommendations</h3><div id="recList"></div></div>
+    <div id="goals" class="tab">
+      <h3>Goals</h3>
+      <form id="goForm"><input name="name" placeholder="Name" required><input name="target" type="number" placeholder="Target balance" required>
+        <input name="deadline" type="date" required><button class="act">Add goal</button></form>
+      <div id="goList"></div>
+    </div>
+    <div id="chat" class="tab">
+      <h3>Ask about your money</h3>
+      <form id="chForm"><input name="q" style="width:70%" placeholder="How much did I spend on food delivery in July?" required><button class="act">Ask</button></form>
+      <div id="chOut"></div>
+    </div>
+  </section>
+  <aside class="panel"><h3 style="margin-top:0">Live agent trace</h3><div id="trace"></div></aside>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

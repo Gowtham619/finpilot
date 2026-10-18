@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+import copy
+import json
+
+from ..engines.verify import check_claim, ungrounded_numbers
+from ..llm import LLMUnavailable
+from .advisor import template_text
+
+REWRITE_SYSTEM = ("Rewrite the advice using ONLY the corrected claim values and the evidence. Keep it to "
+                  "two sentences. Return JSON {\"text\": str}.")
+
+
+def audit(rec, df):
+    issues = []
+    for c in rec["claims"]:
+        r = check_claim(c, df)
+        if r["actual"] is None:
+            issues.append({"type": "unverifiable", "claim": c})
+        elif not r["ok"]:
+            issues.append({"type": "mismatch", "claim": c, "actual": round(r["actual"], 2)})
+    for n in ungrounded_numbers(rec["text"], rec["claims"], rec["evidence"]):
+        issues.append({"type": "ungrounded_number", "value": n})
+    return issues
+
+
+def _describe(issues):
+    return "; ".join(
+        f"{i['type']}: claimed {i['claim']['value']} vs actual {i['actual']}" if i["type"] == "mismatch"
+        else f"{i['type']}: {i.get('claim') or i.get('value')}" for i in issues)
+
+
+def verify_all(recs, df, llm=None, emit=None):
+    emit = emit or (lambda kind, summary, data=None: None)
+    kept, dropped = [], []
+    for rec in recs:
+        issues = audit(rec, df)
+        if not issues:
+            rec.update(verified=True, verifier_notes="all claims recomputed from transactions")
+            emit("ok", f"verified: {rec['action']}", {"rec": rec["id"]})
+            kept.append(rec)
+            continue
+        emit("caught", f"{rec['action']}: {_describe(issues)}", {"rec": rec["id"], "issues": issues})
+        if any(i["type"] == "unverifiable" for i in issues):
+            rec.update(verified=False, verifier_notes="dropped: " + _describe(issues))
+            emit("dropped", f"dropped: {rec['action']} (claim cannot be recomputed)", {"rec": rec["id"]})
+            dropped.append(rec)
+            continue
+        notes = "mismatch caught: " + _describe(issues)
+        fixed = copy.deepcopy(rec["claims"])
+        for i in issues:
+            if i["type"] == "mismatch":
+                for c in fixed:
+                    if c == i["claim"]:
+                        c["value"] = i["actual"]
+        rewritten = None
+        if llm is not None:
+            try:
+                rewritten = llm.json(REWRITE_SYSTEM, json.dumps(
+                    {"evidence": rec["evidence"], "claims": fixed, "bad_text": rec["text"],
+                     "issues": [str(i) for i in issues]}, default=str)).get("text")
+            except (LLMUnavailable, ValueError, AttributeError):
+                rewritten = None
+        attempts = ([(rewritten, "LLM rewrite")] if rewritten else []) + [(None, "template")]
+        for candidate_text, how in attempts:
+            rec["claims"] = fixed
+            rec["text"] = candidate_text if candidate_text else template_text(rec)
+            if not audit(rec, df):
+                rec.update(verified=True, verifier_notes=f"{notes}; corrected via {how}")
+                emit("corrected", f"corrected via {how}: {rec['action']}", {"rec": rec["id"]})
+                kept.append(rec)
+                break
+        else:
+            rec.update(verified=False, verifier_notes=notes + "; could not be grounded")
+            emit("dropped", f"dropped: {rec['action']}", {"rec": rec["id"]})
+            dropped.append(rec)
+    return kept, dropped

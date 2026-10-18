@@ -34,9 +34,16 @@ def pace_check_job():
                 continue
             alerts = pace.pace_alerts(df, _today())
             if alerts:
-                a = alerts[0]
-                body = (f"Pace alert: {a['category']} spend is {a['over_pct']}% above your usual by day {a['day']} "
-                        f"(₹{a['mtd']:,.0f} vs ₹{a['expected']:,.0f}).")
+                a = max(alerts, key=lambda x: x["mtd"] - x["expected"])
+                cat = a["category"].replace("_", " ")
+                if a.get("new_spend") or a.get("over_pct") is None:
+                    body = f"Pace alert: new spending in {cat} this month: ₹{a['mtd']:,.0f} by day {a['day']}."
+                else:
+                    body = (f"Pace alert: {cat} spend is {a['over_pct']}% above your usual by day {a['day']} "
+                            f"(₹{a['mtd']:,.0f} vs ₹{a['expected']:,.0f}).")
+                with db.session() as s:
+                    if db.digest_recent(s, p, body):
+                        continue  # same alert already raised in the last 24h
                 sent = digest.send_email(f"FinPilot pace alert: {p}", body)
                 with db.session() as s:
                     db.save_digest(s, p, "email" if sent else "ui", body, sent)
@@ -45,7 +52,9 @@ def pace_check_job():
 
 
 def build_scheduler():
+    """Cron times use the server's local timezone. Missed runs are coalesced and allowed 1h of grace."""
     sched = BackgroundScheduler()
-    sched.add_job(weekly_digest_job, "cron", day_of_week="mon", hour=9, id="weekly_digest")
-    sched.add_job(pace_check_job, "cron", hour=18, id="pace_check")
+    kw = {"misfire_grace_time": 3600, "coalesce": True}
+    sched.add_job(weekly_digest_job, "cron", day_of_week="mon", hour=9, id="weekly_digest", **kw)
+    sched.add_job(pace_check_job, "cron", hour=18, id="pace_check", **kw)
     return sched

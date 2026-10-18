@@ -203,3 +203,10 @@ def save_trace(s, run_id):
 
 def list_profiles(s):
     return sorted(p.name for p in s.scalars(select(Profile)).all())
+
+
+def digest_recent(s, profile, content, hours=24):
+    """True if an identical digest row for this profile was created within the last `hours`."""
+    since = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(hours=hours)
+    return s.scalars(select(Digest).where(Digest.profile == profile, Digest.content == content,
+                                          Digest.created_at >= since)).first() is not None

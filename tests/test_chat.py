@@ -186,3 +186,21 @@ def test_goal_status_tool_handles_bad_goals(world):
     assert ungrounded_numbers(out["text"], [], res) == []
     out = chat.answer("how are my goals?", df, m, bal, [], None)
     assert "no goals" in out["text"].lower()
+
+
+def test_tool_calls_echo_cleaned_args(world):
+    _, df, m, bal = world
+    llm = FakeLLM(lambda s, u: {"tool": "forecast", "args": {"horizon": "99999", "evil": 1}}
+                  if "choose a tool" in s.lower() else {"text": "x"})
+    out = chat.answer("hi", df, m, bal, [], llm)
+    assert _tc(out)["args"] == {} and _tc(out)["result"]["horizon"] == 30
+    llm = FakeLLM(lambda s, u: {"tool": "forecast", "args": {"horizon": "99999"}}
+                  if "choose a tool" in s.lower() else {"text": "x"})
+    out = chat.answer("hi", df, m, bal, [], llm)
+    assert _tc(out)["args"] == {"horizon": 365}
+
+
+def test_fallback_text_guard(world, monkeypatch):
+    _, df, m, bal = world
+    monkeypatch.setattr(chat, "_fallback_text", lambda n, r: (_ for _ in ()).throw(KeyError("x")))
+    assert chat.answer("hi", df, m, bal, [], None)["text"]

@@ -145,20 +145,24 @@ def _tools(df, model, balance, goals):
 
 
 def _run_tool(tools, name, args):
-    """Validate args, then run. Invalid args fall back to defaults only for tools whose args are all optional;
+    return _run_tool_args(tools, name, args)[0]
+
+
+def _run_tool_args(tools, name, args):
+    """Returns (result, cleaned_args). Validate args, then run. Invalid args fall back to defaults only for tools whose args are all optional;
     any other failure becomes an {"error": ...} result. Never raises."""
     try:
         clean = _clean_args(name, args)
     except BadArgs as e:
         if _REQUIRED.get(name):
-            return {"error": f"I need valid arguments for {name.replace('_', ' ')}: {e}."}
+            return {"error": f"I need valid arguments for {name.replace('_', ' ')}: {e}."}, {}
         clean = {}
     except Exception:
         clean = {}
     try:
-        return tools[name](**clean)
+        return tools[name](**clean), clean
     except Exception as e:
-        return {"error": f"{name.replace('_', ' ')} failed ({type(e).__name__})"}
+        return {"error": f"{name.replace('_', ' ')} failed ({type(e).__name__})"}, clean
 
 
 TOOL_SYSTEM = ("Choose a tool to answer the user's money question. Tools: month_total(category, month 'YYYY-MM'), "
@@ -229,8 +233,11 @@ def answer(question, df, model, balance, goals, llm=None):
             pass
     if name is None:
         name, args = _heuristic(str(question))
-    result = _run_tool(tools, name, args)
-    fallback = _fallback_text(name, result)
+    result, args = _run_tool_args(tools, name, args)
+    try:
+        fallback = _fallback_text(name, result)
+    except Exception:
+        fallback = "I couldn't put that into words, sorry."
     text = fallback
     if llm is not None:
         try:
@@ -239,5 +246,4 @@ def answer(question, df, model, balance, goals, llm=None):
                 text = grounded_or(out.get("text"), result, fallback)
         except Exception:
             pass
-    shown = args if isinstance(args, dict) else {}
-    return {"text": text, "tool_calls": [{"name": name, "args": shown, "result": result}]}
+    return {"text": text, "tool_calls": [{"name": name, "args": args, "result": result}]}

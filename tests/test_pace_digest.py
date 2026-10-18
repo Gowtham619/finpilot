@@ -53,7 +53,7 @@ def test_email_sent_when_configured(monkeypatch):
     sent = {}
 
     class FakeSMTP:
-        def __init__(self, host, port=587): sent["host"] = host
+        def __init__(self, host, port=587, timeout=None): sent["host"] = host
         def __enter__(self): return self
         def __exit__(self, *a): return False
         def starttls(self): sent["tls"] = True
@@ -167,3 +167,97 @@ def test_scheduler_lifespan_starts_and_stops(monkeypatch):
         assert {j.id for j in made[0].get_jobs()} == {"weekly_digest", "pace_check"}
         assert c.get("/api/personas").status_code == 200
     assert events == ["start", "shutdown"]
+
+
+def _setup_smtp(monkeypatch, smtp_cls, to="me@example.com"):
+    monkeypatch.setattr("finpilot.digest.smtplib.SMTP", smtp_cls)
+    monkeypatch.setenv("SMTP_HOST", "smtp.test")
+    monkeypatch.setenv("SMTP_USER", "u")
+    monkeypatch.setenv("SMTP_PASS", "s3cretpw")
+    monkeypatch.setenv("DIGEST_TO", to)
+
+
+def test_smtp_failure_logged_without_password_and_reported(loaded, monkeypatch, caplog):
+    import smtplib
+    seen = {}
+
+    class Bad:
+        def __init__(self, host, port=587, timeout=None):
+            seen["port"], seen["timeout"] = port, timeout
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): pass
+        def login(self, u, p): raise smtplib.SMTPAuthenticationError(535, b"bad s3cretpw creds")
+    _setup_smtp(monkeypatch, Bad)
+    monkeypatch.setenv("SMTP_PORT", "2525")
+    with caplog.at_level("WARNING", logger="finpilot.digest"):
+        assert digest.send_email("s", "b") is False
+        out = digest.deliver("priya")
+    assert seen == {"port": 2525, "timeout": 10}
+    assert out["sent"] is False and out["channel"] == "ui" and out["error"] == "SMTPAuthenticationError"
+    assert "SMTPAuthenticationError" in caplog.text and "s3cretpw" not in caplog.text
+
+
+def test_not_configured_is_quiet(monkeypatch, caplog):
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    with caplog.at_level("WARNING", logger="finpilot.digest"):
+        assert digest.send_email("s", "b") is False
+    assert caplog.text == ""
+
+
+def test_newline_in_recipient_does_not_raise(loaded, monkeypatch):
+    class Never:
+        def __init__(self, *a, **k): pass
+    _setup_smtp(monkeypatch, Never, to="a@b.com\nBcc: evil@x.com")
+    out = digest.deliver("priya")
+    assert out["sent"] is False and "error" in out
+
+
+def test_digest_without_narrative(loaded):
+    with db.session() as s:
+        fc = db.load_forecast(s, "priya")
+        del fc["forecast"]["narrative"]
+        db.save_forecast(s, "priya", fc)
+    assert "Key insight" in digest.build_digest("priya")
+
+
+def test_pace_zero_expected_flagged_and_sorted():
+    df = prep()
+    today = pd.Timestamp("2026-09-15")
+    df = df[df["date"] <= today]
+    extra = pd.DataFrame({"date": [pd.Timestamp("2026-09-10")] * 2, "description": ["X"] * 2,
+                          "amount": [-5000.0] * 2, "merchant": ["BRANDNEWSHOP"] * 2, "category": ["travel"] * 2})
+    alerts = pace.pace_alerts(pd.concat([df, extra], ignore_index=True), today)
+    a = next(a for a in alerts if a["category"] == "travel")
+    if a["expected"] == 0:
+        assert a["new_spend"] is True and a["over_pct"] is None
+    overs = [x["mtd"] - x["expected"] for x in alerts]
+    assert overs == sorted(overs, reverse=True)
+
+
+def _job_digests():
+    with db.session() as s:
+        return [d["content"] for d in db.list_digests(s, "priya")]
+
+
+def test_pace_job_messages_largest_dedupes_and_no_none(loaded, monkeypatch):
+    from finpilot import scheduler
+    alerts = [{"category": "dining", "over_pct": 50.0, "day": 5, "mtd": 4000.0, "expected": 3000.0},
+              {"category": "travel", "over_pct": None, "new_spend": True, "day": 5, "mtd": 9000.0, "expected": 0.0},
+              {"category": "shopping", "over_pct": 40.0, "day": 5, "mtd": 3000.0, "expected": 2000.0}]
+    monkeypatch.setattr("finpilot.engines.pace.pace_alerts", lambda d, t: alerts)
+    before = len(_job_digests())
+    scheduler.pace_check_job()
+    scheduler.pace_check_job()  # identical alert within 24h -> skipped
+    got = _job_digests()
+    assert len(got) == before + 1
+    assert got[0] == "Pace alert: new spending in travel this month: ₹9,000 by day 5." and "None" not in got[0]
+    alerts[:] = alerts[:1]  # different content is still recorded
+    scheduler.pace_check_job()
+    assert len(_job_digests()) == before + 2
+
+
+def test_scheduler_jobs_coalesce_and_grace():
+    from finpilot.scheduler import build_scheduler
+    for j in build_scheduler().get_jobs():
+        assert j.coalesce is True and j.misfire_grace_time == 3600

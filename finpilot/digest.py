@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 import smtplib
 from email.message import EmailMessage
 
 from . import db
 from .agents.common import inr
+
+log = logging.getLogger("finpilot.digest")
 
 
 def build_digest(profile):
@@ -14,7 +17,7 @@ def build_digest(profile):
         fc = (db.load_forecast(s, profile) or {}).get("forecast")
     if not recs and not fc:
         return f"No data yet for {profile}."
-    insight = fc["narrative"] if fc else "No forecast yet."
+    insight = (fc or {}).get("narrative") or "No forecast yet."
     best = max(recs, key=lambda r: r.get("est_monthly_savings", 0) + r.get("est_one_off", 0), default=None)
     lines = [f"FinPilot weekly digest for {profile}", "", f"Key insight: {insight}", ""]
     lines.append(f"One action: {best['text']}" if best else "One action: nothing urgent this week.")
@@ -27,28 +30,40 @@ def build_digest(profile):
     return "\n".join(lines)
 
 
-def send_email(subject, body):
-    host = os.getenv("SMTP_HOST")
-    to = os.getenv("DIGEST_TO")
+def _send(subject, body):
+    """Returns (sent, error_type). error_type is None when not configured or on success."""
+    host, to = os.getenv("SMTP_HOST"), os.getenv("DIGEST_TO")
     if not host or not to:
-        return False
-    msg = EmailMessage()
-    msg["Subject"], msg["To"], msg["From"] = subject, to, os.getenv("SMTP_USER", "finpilot@localhost")
-    msg.set_content(body)
+        return False, None  # not configured: quiet
     try:
-        with smtplib.SMTP(host, 587) as smtp:
+        port = int(os.getenv("SMTP_PORT") or 587)
+        msg = EmailMessage()
+        msg["Subject"], msg["To"], msg["From"] = subject, to, os.getenv("SMTP_USER", "finpilot@localhost")
+        msg.set_content(body)
+        with smtplib.SMTP(host, port, timeout=10) as smtp:
             smtp.starttls()
             smtp.login(os.getenv("SMTP_USER", ""), os.getenv("SMTP_PASS", ""))
             smtp.send_message(msg)
-        return True
-    except Exception:
-        return False
+        return True, None
+    except Exception as e:
+        # log type and message only; never credentials
+        pw = os.getenv("SMTP_PASS") or None
+        detail = str(e).replace(pw, "***") if pw else str(e)
+        log.warning("digest email failed: %s: %s", type(e).__name__, detail)
+        return False, type(e).__name__
+
+
+def send_email(subject, body):
+    return _send(subject, body)[0]
 
 
 def deliver(profile):
     text = build_digest(profile)
-    sent = send_email(f"FinPilot digest: {profile}", text)
+    sent, err = _send(f"FinPilot digest: {profile}", text)
     channel = "email" if sent else "ui"
     with db.session() as s:
         db.save_digest(s, profile, channel, text, sent)
-    return {"channel": channel, "sent": sent, "content": text}
+    out = {"channel": channel, "sent": sent, "content": text}
+    if err:
+        out["error"] = err
+    return out

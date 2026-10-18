@@ -23,8 +23,11 @@ def pace_alerts(df, today, min_over=0.3, min_abs=500.0):
         mtd = float(by_m.get(month, 0.0))
         expected = float(prior.median())
         if mtd > expected * (1 + min_over) and mtd - expected >= min_abs:
-            out.append({"id": f"pace:{cat}:{month}", "type": "pace_alert", "category": cat,
-                        "mtd": round(mtd, 2), "expected": round(expected, 2),
-                        "over_pct": round((mtd / expected - 1) * 100, 1) if expected else None,
-                        "day": int(today.day)})
-    return out
+            a = {"id": f"pace:{cat}:{month}", "type": "pace_alert", "category": cat,
+                 "mtd": round(mtd, 2), "expected": round(expected, 2),
+                 "over_pct": round((mtd / expected - 1) * 100, 1) if expected else None,
+                 "day": int(today.day)}
+            if not expected:
+                a["new_spend"] = True  # no usual spend to compare against; over_pct is None
+            out.append(a)
+    return sorted(out, key=lambda a: a["mtd"] - a["expected"], reverse=True)

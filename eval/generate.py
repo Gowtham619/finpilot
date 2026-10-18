@@ -92,6 +92,8 @@ def generate(seed=0, months=12, end="2026-09", salary=62000, gym_used=False) -> 
         if p == big_p:
             add(d(17), "GLOBALTECH TRADING LTD", "shopping", -24000, "big")
         if p == dup_p:
+            # Raw descriptions of the pair differ randomly on purpose (realism); the
+            # duplicate detector matches on the normalized merchant, not raw text.
             add(d(21), "AMAZON", "shopping", -2199.0, "dup_orig")
             add(d(22), "AMAZON", "shopping", -2199.0, "dup")
 

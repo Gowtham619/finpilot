@@ -1,7 +1,8 @@
+PYTHON ?= python3
 .PHONY: test eval run
 test:
-	pytest -q
+	$(PYTHON) -m pytest -q
 eval:
-	python -m eval.run_eval
+	$(PYTHON) -m eval.run_eval
 run:
-	uvicorn finpilot.api:app --reload
+	$(PYTHON) -m uvicorn finpilot.api:app --reload

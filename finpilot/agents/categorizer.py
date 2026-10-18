@@ -20,9 +20,11 @@ def _llm_map(unknown, llm):
             res = llm.json(SYSTEM, json.dumps(batch))
         except (LLMUnavailable, ValueError):
             continue
+        if not isinstance(res, dict):
+            continue
         for m in batch:
             c = res.get(m)
-            if c is not None:
+            if isinstance(c, str):
                 mapping[m] = c if c in CATEGORIES else "other"
     return mapping
 

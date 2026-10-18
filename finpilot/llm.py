@@ -47,9 +47,12 @@ class LLM:
     def json(self, system, user):
         txt = self.complete(system, user, json_mode=True)
         try:
-            return json.loads(txt)
+            val = json.loads(txt)
         except json.JSONDecodeError as e:
             raise LLMUnavailable(f"bad json from model: {e}")
+        if not isinstance(val, dict):
+            raise LLMUnavailable("expected a JSON object")
+        return val
 
 
 _llm = None

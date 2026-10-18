@@ -51,3 +51,9 @@ def test_missing_key(monkeypatch):
 
 def test_routes_through_mesh():
     assert "api.meshapi.ai" in config.MESH_BASE_URL
+
+
+def test_non_object_json_raises_unavailable():
+    client, _ = make_client(["[1,2]"])
+    with pytest.raises(LLMUnavailable):
+        LLM(client=client).json("s", "u")

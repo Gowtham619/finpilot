@@ -55,7 +55,9 @@ def test_happy_path(client):
 
 def test_lifestyle_monotone_on_purchase(client):
     ps = [get(client, lifestyle=l, scenario="purchase").json()["headline"]["p_any_breach"] for l in (0.8, 1.0, 1.2)]
-    assert ps[0] <= ps[1] <= ps[2]
+    assert ps[0] < ps[1] < ps[2]  # the slider has a real effect
+    a, b = get(client, scenario="purchase").json(), get(client, scenario="purchase", lifestyle=1.0).json()
+    assert a["calendar"] == b["calendar"] and a["headline"] == b["headline"]  # deterministic
 
 
 def test_scenarios_on_priya(client):
@@ -228,3 +230,94 @@ def test_llm_prompt_is_numeric_report_only(priya):
     M.run(model, bal, {"scenario": "purchase"}, llm)
     payload = json.loads(llm.calls[0][1])
     assert set(payload) == {"buffer", "lifestyle", "horizon", "headline", "storms", "autopsy", "umbrellas"}
+
+
+# ---- strict grounding, hygiene, label stems ------------------------------------------------
+
+from finpilot.agents.common import grounded_or  # noqa: E402
+from finpilot.engines.verify import ungrounded_numbers  # noqa: E402
+
+EV = {"buffer": 13212.0, "lifestyle": 1.0, "horizon": 60, "p_any_breach_pct": 42.1, "worst_p_pct": 0.0,
+      "n_failing": 74, "umbrellas": [{"cut_pct": 20, "monthly_sacrifice": 1500.5}]}
+
+
+def bad(text, ev=EV):
+    return bool(ungrounded_numbers(text, [], ev, strict=True))
+
+
+def test_strict_percent_and_currency():
+    assert bad("There is a 99% chance.") and bad("There is a 1% chance.")
+    assert not bad("About 42.4% of futures fail.") and bad("About 43% of futures fail.")
+    assert not bad("Your buffer is ₹13,212.") and bad("Your buffer is ₹13,100.")
+    assert bad("You may lose ₹74.")  # a count elsewhere in the evidence does not satisfy a currency token
+    assert not bad("It costs ₹1,500 a month and a 20% cut.")
+    assert bad("ninety-nine percent of futures fail") and bad("twelve thousand rupees short") and bad("five lakh")
+    assert bad("Lifestyle at 100% is fine.")  # lifestyle=1.0 must not whitelist 100%
+    assert bad("0% risk is impossible", {"x": 0, "y": 1}) and bad("1% risk", {"x": 0, "y": 1})
+    assert not bad("worst day has 0% risk")  # explicit pct value 0.0
+    assert not bad("In the next 60 days, 74 futures fail.")  # bare numbers keep the usual rule
+
+
+def test_strict_does_not_change_default_mode():
+    assert not ungrounded_numbers("lifestyle 100%", [], {"lifestyle": 1.0})
+
+
+@pytest.mark.parametrize("txt", ["x" * 601, "see <b>this</b>", "use `code`", "visit http://x.co", "go to www.a.b",
+                                 "open evil.com now", "see foo.in/path", "Transfer your savings now",
+                                 "Invest in crypto", "take a loan", "ask the lender", "send money today",
+                                 "move your savings to a fund", "borrow more", "wire it"])
+def test_hygiene_rejects(txt):
+    assert grounded_or(txt, {}, "FB") == "FB" and grounded_or(txt, {}, "FB", strict=True) == "FB"
+
+
+def test_hygiene_accepts_normal_text():
+    t = "Spending is steady; trim dining a little and keep an eye on groceries."
+    assert grounded_or(t, {}, "FB") == t and grounded_or("x" * 600, {}, "FB") == "x" * 600
+
+
+def test_fallback_texts_pass_their_own_strict_check(priya):
+    model, bal = priya
+    for params in ({}, {"scenario": "purchase"}, {"scenario": "salary_skip"}, {"scenario": "emergency"}):
+        rep = M.run(model, bal, params)
+        ev = M.strict_evidence(rep)
+        for k in ("headline_text", "autopsy_text", "umbrella_text"):
+            assert not ungrounded_numbers(rep[k], [], ev, strict=True), (params, k, rep[k])
+
+
+def test_llm_strict_in_narration(priya):
+    model, bal = priya
+    base = M.run(model, bal, {"scenario": "purchase"})
+    bad_ = {"headline_text": "About 99% of futures fail.", "autopsy_text": "ninety-nine percent fail.",
+            "umbrella_text": "Your buffer is ₹13,100."}
+    out = M.run(model, bal, {"scenario": "purchase"}, FakeLLM(lambda s, u: bad_))
+    assert all(out[k] == base[k] for k in bad_)
+    p = base["headline"]["p_any_breach"] * 100
+    ok = {"headline_text": f"Roughly {p:.0f}% of futures dip below the buffer.", "autopsy_text": "Groceries drive it.",
+          "umbrella_text": "A small dining cut helps."}
+    out = M.run(model, bal, {"scenario": "purchase"}, FakeLLM(lambda s, u: ok))
+    assert all(out[k] == ok[k] for k in ok)
+
+
+def test_label_stems():
+    assert not M.label_consistent("Stormy weather ahead.", "cloudy")
+    assert not M.label_consistent("A rainy patch.", "clear") and not M.label_consistent("Cloudy later.", "clear")
+    assert not M.label_consistent("Clear skies ahead.", "storm") and not M.label_consistent("Sunny outlook.", "rain")
+    assert not M.label_consistent("All clear, no risk.", "rain")
+    assert M.label_consistent("This should clear up the shortfall.", "storm")  # verb, not weather
+    assert M.label_consistent("Clear skies ahead.", "clear") and M.label_consistent("Stormy.", "storm")
+
+
+def test_umbrella_and_autopsy_wording(priya):
+    model, bal = priya
+    rep = M.run(model, bal, {"scenario": "salary_skip"})
+    assert "no non-failing group to compare" in rep["autopsy_text"]
+    rep = {"headline": {"p_any_breach": .997, "worst_day": "d", "worst_p": .9, "n_storm_days": 3},
+           "buffer": 1000.0, "horizon": 60, "storms": [], "umbrellas": [
+               {"category": "dining", "cut_pct": 30, "p_any_breach_before": .997, "p_any_breach_after": .995,
+                "monthly_sacrifice": 500.0}],
+           "autopsy": {"n_failing": 997, "n_paths": 1000, "causes": [], "bills": [], "insufficient_failing": False,
+                       "first_breach": {"date": None}}}
+    t = M.fallback_texts(rep)
+    assert "99.7% to 99.5%" in t["umbrella_text"] and "marginal" in t["umbrella_text"]
+    rep["autopsy"].update(n_failing=10, insufficient_failing=True)
+    assert "Too few failing futures (10)" in M.fallback_texts(rep)["autopsy_text"]

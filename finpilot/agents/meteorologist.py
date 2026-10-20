@@ -18,8 +18,9 @@ SCENARIOS = ("none", "salary_skip", "purchase", "emergency")
 DEFAULT_AMOUNT = {"purchase": 80000.0, "emergency": 40000.0}
 MAX_AMOUNT = 1e9
 _SEV = {"clear": 0, "cloudy": 1, "rain": 2, "storm": 3}
-_WORD = re.compile(r"\b(clear|cloudy|rain|storm)s?\b", re.I)
-_NO_RISK = re.compile(r"\bno (?:\w+ )?risk\b|\ball clear\b|\brisk[- ]free\b", re.I)
+_STEM = re.compile(r"\b(storm\w*|rain\w*|cloud\w*|sunny|sunshine|sunlit|wet)\b", re.I)
+_CLEAR = re.compile(r"\bclear\s+(?:skies|sky|weather|outlook|forecast|day|days)\b|\ball clear\b", re.I)
+_NO_RISK = re.compile(r"\bno (?:\w+ )?risk\b|\brisk[- ]free\b", re.I)
 
 
 def check_amount(x):
@@ -74,21 +75,45 @@ def _worst_label(rep):
     return W.label(rep["headline"]["worst_p"])
 
 
+def _sev(word):
+    w = word.lower()
+    return 3 if w.startswith("storm") else 2 if w.startswith("rain") or w == "wet" else \
+        1 if w.startswith("cloud") else 0
+
+
 def label_consistent(text, worst):
-    """Weather words in the text may not exceed the worst label, and a storm/rain outlook cannot be
-    called clear or risk-free."""
+    """Weather words (storm*, rain*, cloud*, sunny, wet, 'clear skies') may not exceed the worst label, and
+    a storm/rain outlook cannot be called clear or risk-free. 'clear' as a verb is not a weather word."""
     if not isinstance(text, str):
         return False
-    words = {w.lower() for w in _WORD.findall(text)}
-    if any(_SEV[w] > _SEV[worst] for w in words):
+    sev = [_sev(w) for w in _STEM.findall(text)]
+    if any(v > _SEV[worst] for v in sev):
         return False
-    if _SEV[worst] >= _SEV["rain"] and ("clear" in words or _NO_RISK.search(text)):
+    if _SEV[worst] >= _SEV["rain"] and (_CLEAR.search(text) or _NO_RISK.search(text)
+                                        or any(v == 0 for v in sev)):
         return False
     return True
 
 
 def _evidence(rep):
     return {k: rep[k] for k in ("buffer", "lifestyle", "horizon", "headline", "storms", "autopsy", "umbrellas")}
+
+
+def strict_evidence(rep):
+    """Only the numbers the narration may state (explicit *_pct values for percentages, money amounts)."""
+    h, a = rep["headline"], rep["autopsy"]
+    pc = lambda x: round(float(x) * 100, 1)  # noqa: E731
+    return {"buffer": rep["buffer"], "horizon": rep["horizon"], "p_any_breach_pct": pc(h["p_any_breach"]),
+            "worst_p_pct": pc(h["worst_p"]), "n_storm_days": h["n_storm_days"], "n_storms": len(rep["storms"]),
+            "storms": [{"peak_pct": pc(x["peak_p"]), "days": x["days"]} for x in rep["storms"]],
+            "umbrellas": [{"cut_pct": u["cut_pct"], "before_pct": pc(u["p_any_breach_before"]),
+                           "after_pct": pc(u["p_any_breach_after"]), "reduction_pct": pc(u["risk_reduction"]),
+                           "monthly_sacrifice": u["monthly_sacrifice"]} for u in rep["umbrellas"]],
+            "autopsy": {"n_failing": a["n_failing"], "n_paths": a["n_paths"],
+                        "causes": [{"excess_per_path": c["excess_per_path"], "share_pct": pc(c["share_of_gap"])}
+                                   for c in a["causes"]],
+                        "bills": [abs(b["amount"]) for b in a["bills"]]},
+            "scenario_amount": rep.get("scenario_amount")}
 
 
 def fallback_texts(rep):
@@ -115,15 +140,21 @@ def fallback_texts(rep):
             aut += (f" The biggest driver is {c['category'].replace('_', ' ')}: {inr(c['excess_per_path'])} "
                     f"more spend than in the safe futures ({c['share_of_gap']*100:.0f}% of the gap).")
         elif a["insufficient_failing"]:
-            aut += " Too few failing futures to attribute causes reliably."
+            aut += f" Too few failing futures ({a['n_failing']}) to attribute causes reliably."
+        elif a["n_failing"] >= a["n_paths"]:
+            aut += (" Every simulated future falls below the buffer, so there is no non-failing group to compare.")
         if a["bills"]:
             b = a["bills"][0]
             aut += f" Earliest outflow before then: {b['merchant']} {inr(abs(b['amount']))} on {b['date']}."
     if rep["umbrellas"]:
         u = rep["umbrellas"][0]
+        b4, af = u["p_any_breach_before"] * 100, u["p_any_breach_after"] * 100
+        fmt = ".1f" if f"{b4:.0f}" == f"{af:.0f}" else ".0f"
         umb = (f"Best umbrella: cut {u['category'].replace('_', ' ')} by {u['cut_pct']}%, which lowers the "
-               f"chance of breaching the buffer from {u['p_any_breach_before']*100:.0f}% to "
-               f"{u['p_any_breach_after']*100:.0f}% and costs about {inr(u['monthly_sacrifice'])} a month.")
+               f"chance of breaching the buffer from {b4:{fmt}}% to {af:{fmt}}% and costs about "
+               f"{inr(u['monthly_sacrifice'])} a month.")
+        if b4 - af < 1:
+            umb += " That is only a marginal effect."
     elif h["p_any_breach"] <= 0:
         umb = "No umbrella needed: the buffer is not breached in any simulated future."
     else:
@@ -149,10 +180,10 @@ def run(model, balance, params, llm=None):
     texts = fallback_texts(rep)
     out = narrate(llm, SYSTEM, _evidence(rep), None)
     if isinstance(out, dict):
-        worst, ev = _worst_label(rep), _evidence(rep)
+        worst, ev = _worst_label(rep), strict_evidence(rep)
         for k in texts:
             v = out.get(k)
             if isinstance(v, str) and label_consistent(v, worst):
-                texts[k] = grounded_or(v, ev, texts[k])
+                texts[k] = grounded_or(v, ev, texts[k], strict=True)
     rep.update(texts)
     return rep

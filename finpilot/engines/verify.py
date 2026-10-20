@@ -190,7 +190,45 @@ def _keyed_numbers(obj, key=""):
             yield from _keyed_numbers(v, key)
 
 
-def ungrounded_numbers(text, claims, evidence):
+_NUMW = (r"zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|"
+         r"sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|"
+         r"thousand|lakhs?|crores?|million")
+_WORD_AMOUNT = re.compile(rf"\b(?:{_NUMW})(?:[\s-]+(?:{_NUMW}|and))*[\s-]+"
+                          r"(?:percent|per\s*cent|pct|rupees?|rs|inr|lakhs?|crores?|thousand|million)\b", re.I)
+_NOT_MONEY_KEY = re.compile(r"day|horizon|^n_|_n$|count|window|cut_pct|failing|paths", re.I)
+
+
+def _strict_pools(evidence):
+    """(percent_pool, money_pool). Percent: values under pct/percent/share/rate keys (as is) plus fractions
+    strictly between 0 and 1 times 100 (exactly 0 and 1 never derive 0%/100%; supply an explicit *_pct value
+    for those). Money: other numbers with |v| >= 1 whose key is not a count/day/horizon key."""
+    pct, money = [], []
+    for k, v in _keyed_numbers(evidence):
+        if _PCT_KEY.search(k):
+            pct.append(v)
+            continue
+        if 0 < abs(v) < 1:
+            pct.append(abs(v) * 100)
+        elif abs(v) >= 1 and not _NOT_MONEY_KEY.search(k):
+            money.append(abs(v))
+    return pct, money
+
+
+def _strict_numbers(text, evidence):
+    out = [m.group(0) for m in _WORD_AMOUNT.finditer(str(text))]
+    pct, money = _strict_pools(evidence)
+    for t in text_numbers(text):
+        n = t["value"]
+        if t["percent"]:
+            if not any(abs(n - a) <= 0.5 for a in pct):
+                out.append(n)
+        elif t["currency"] or t["suffix"]:
+            if not any(abs(n - a) <= max(1.0, 0.001 * abs(a)) for a in money):
+                out.append(n)
+    return out
+
+
+def ungrounded_numbers(text, claims, evidence, strict=False):
     """Numbers in text that match no claim value or evidence number. Exempt (not checked): ISO dates,
     bare 4-digit years 1990-2100, and BARE numbers under 10 or in ALLOWED_CONSTANTS. A number followed
     by '%' (or 'percent', 'per cent', 'pct', 'percentage points') or preceded by a currency token (₹, Rs, INR, $, USD) is always checked, and a percentage
@@ -203,6 +241,17 @@ def ungrounded_numbers(text, claims, evidence):
     pct_ok += [float(c["value"]) for c in claims if isinstance(c, dict) and c.get("kind") in ("pct_change", *WEATHER_KINDS)
                and _numeric(c.get("value"))]
     pct_ok += [v for k, v in _keyed_numbers(evidence) if _PCT_KEY.search(k)]
+    if strict:
+        out = _strict_numbers(text, evidence)
+        for t in text_numbers(text):  # bare numbers: the usual rule (percent/currency handled above)
+            n = t["value"]
+            if t["percent"] or t["currency"] or t["suffix"]:
+                continue
+            if re.fullmatch(r"\d{4}", t["token"]) and 1990 <= n <= 2100 or n in ALLOWED_CONSTANTS or n < 10:
+                continue
+            if not any(matches(n, a) for a in allowed):
+                out.append(n)
+        return out
     out = []
     for t in text_numbers(text):
         n = t["value"]

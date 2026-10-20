@@ -24,6 +24,8 @@ from . import forecast as F
 STORM_P = 0.25
 MAX_LIFESTYLE = 2.0
 CUT_STEPS = (10, 20, 30)
+# essentials / non-actionable categories: never offered as an umbrella (cut) target
+NON_ACTIONABLE = {"uncategorized", "other", "health", "rent", "income", "utilities"}
 
 
 def label(p: float) -> str:
@@ -209,7 +211,8 @@ def _umbrellas(model, balance, horizon, n, seed, buf, lifestyle, cuts, extra_flo
     cuts = _cuts(cuts)
     life = _lifestyle(lifestyle)
     mean_daily = model.daily.mean(axis=0)
-    top = sorted(range(len(model.cats)), key=lambda i: (-mean_daily[i], model.cats[i]))[:4]
+    top = sorted((i for i in range(len(model.cats)) if model.cats[i] not in NON_ACTIONABLE),
+                 key=lambda i: (-mean_daily[i], model.cats[i]))[:4]
     cands = []
     for i in top:
         cat = model.cats[i]

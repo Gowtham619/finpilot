@@ -106,15 +106,18 @@ def create_app():
                 await asyncio.sleep(0.25)
         return EventSourceResponse(gen())
 
-    def _ask(profile, req):
+    def _ask_raw(profile, req):
         try:
-            run_id, answer = service.request(profile, req)
+            return service.request(profile, req)
         except KeyError as e:  # malformed request body (KeyError is also a LookupError)
             raise HTTPException(400, f"missing field {e}")
         except LookupError as e:
             raise HTTPException(404, str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
+
+    def _ask(profile, req):
+        run_id, answer = _ask_raw(profile, req)
         return {"run_id": run_id, "answer": answer}
 
     @app.post("/api/afford/{profile}")
@@ -128,6 +131,20 @@ def create_app():
     @app.post("/api/chat/{profile}")
     def chat(body: dict, profile: str = Depends(valid_profile)):
         return _ask(profile, {"type": "chat", "question": str(body.get("question", ""))})
+
+    @app.get("/api/weather/{profile}")
+    def weather(profile: str = Depends(valid_profile), lifestyle: str = "1.0", horizon: str = "60",
+                buffer: str | None = None, scenario: str = "none", amount: str | None = None,
+                cuts: str | None = None):
+        params = {"lifestyle": lifestyle, "horizon": horizon, "buffer": buffer, "scenario": scenario,
+                  "amount": amount}
+        if cuts:
+            try:
+                params["cuts"] = json.loads(cuts)
+            except ValueError:
+                raise HTTPException(400, "cuts must be a JSON object such as {\"dining\": 0.2}")
+        run_id, answer = _ask_raw(profile, {"type": "weather", "params": params})
+        return {**answer, "run_id": run_id}
 
     @app.get("/api/goals/{profile}")
     def goals_get(profile: str = Depends(valid_profile)):

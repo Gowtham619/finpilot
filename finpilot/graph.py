@@ -4,7 +4,7 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from .agents import advisor, analyzer, categorizer, forecaster, simulator, verifier
+from .agents import advisor, analyzer, categorizer, forecaster, meteorologist, simulator, verifier
 from .engines import weather as weather_engine
 from .engines.forecast import current_balance
 from .trace import trace as default_trace
@@ -112,6 +112,15 @@ def build_graph(llm=None, tr=default_trace, persist=None):
         emit(state, "simulator", "result", ans["reason"])
         return {"answer": ans}
 
+    def n_weather(state):
+        emit(state, "meteorologist", "start", "reading the 60-day money weather")
+        emit(state, "meteorologist", "tool", "simulating 1,000 futures for the risk calendar, autopsy and umbrellas")
+        bal = current_balance(state["df"], state["opening"])
+        # ValueError (bad params) intentionally propagates
+        ans = meteorologist.run(state["model"], bal, state["request"].get("params") or {}, llm)
+        emit(state, "meteorologist", "result", ans["headline_text"], ans["headline"])
+        return {"answer": ans}
+
     def n_chat(state):
         from .agents import chat  # built in Task 11; ImportError until then
         emit(state, "chat", "tool", "answering from your data")
@@ -123,13 +132,15 @@ def build_graph(llm=None, tr=default_trace, persist=None):
     g = StateGraph(State)
     for name, fn in [("categorize", n_categorize), ("analyze", n_analyze), ("forecast", n_forecast),
                      ("advise", n_advise), ("verify", n_verify), ("persist", n_persist),
-                     ("prepare", n_prepare), ("afford", n_afford), ("duel", n_duel), ("chat", n_chat)]:
+                     ("prepare", n_prepare), ("afford", n_afford), ("duel", n_duel), ("weather", n_weather), ("chat", n_chat)]:
         g.add_node(name, fn)
     g.add_conditional_edges(START, route, {"pipeline": "categorize", "afford": "prepare",
-                                           "duel": "prepare", "chat": "prepare"})
-    g.add_conditional_edges("prepare", route, {"afford": "afford", "duel": "duel", "chat": "chat"})
+                                           "duel": "prepare", "weather": "prepare",
+                                           "chat": "prepare"})
+    g.add_conditional_edges("prepare", route, {"afford": "afford", "duel": "duel", "weather": "weather",
+                                            "chat": "chat"})
     for a, b in [("categorize", "analyze"), ("analyze", "forecast"), ("forecast", "advise"),
                  ("advise", "verify"), ("verify", "persist"), ("persist", END),
-                 ("afford", END), ("duel", END), ("chat", END)]:
+                 ("afford", END), ("duel", END), ("weather", END), ("chat", END)]:
         g.add_edge(a, b)
     return g.compile()

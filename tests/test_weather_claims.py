@@ -91,8 +91,8 @@ def test_tolerance_for_percent_kinds(world):
     df, ctx, _, rep = world
     pk = rep["storms"][0]["peak_p"] * 100
     c = {"kind": "storm_peak", "date": rep["storms"][0]["peak_date"]}
-    assert V.check_claim(dict(c, value=pk + 0.9), df, ctx)["ok"]
-    assert not V.check_claim(dict(c, value=pk + 1.5), df, ctx)["ok"]
+    assert V.check_claim(dict(c, value=pk + 0.4), df, ctx)["ok"]
+    assert not V.check_claim(dict(c, value=pk + 0.8), df, ctx)["ok"]
 
 
 def test_percent_claims_accepted_in_text_but_wrong_percent_is_not(world):
@@ -184,4 +184,96 @@ def test_clear_skies_pipeline_has_no_storm_warning():
         {"run_id": "w2", "profile": "t", "request": {"type": "pipeline"}, "df": df, "opening": 40000.0,
          "corrections": {}, "goals": []})
     assert out["weather"]["storms"] == []
+    assert not any(r["trigger_type"] == "storm_warning" for r in out["recs"])
+
+
+def _storm_rec(world, text, peak, after, cut=30, cat="groceries", date=None):
+    df, ctx, _, rep = world
+    st = rep["storms"][0]
+    date = date or st["peak_date"]
+    claims = [{"kind": "storm_peak", "date": date, "value": peak},
+              {"kind": "storm_peak_after_cut", "date": date, "category": cat, "cut_pct": cut, "value": after}]
+    ev = {"storm": dict(st), "buffer": rep["buffer"], "horizon": 60,
+          "umbrella": {"category": cat, "cut_pct": cut}}
+    rec = {"cid": "c0", "trigger_type": "storm_warning", "action": "x", "finding_ids": ["weather"],
+           "evidence": ev, "claims": claims, "est_monthly_savings": 0.0, "est_one_off": 0.0,
+           "id": "rec-s", "verified": False, "verifier_notes": "", "model": "llm", "text": text,
+           "verification": "recomputed"}
+    return rec
+
+
+def _true_vals(world):
+    df, ctx, _, rep = world
+    st = rep["storms"][0]
+    return (V.recompute({"kind": "storm_peak", "date": st["peak_date"]}, df, ctx),
+            V.recompute({"kind": "storm_peak_after_cut", "date": st["peak_date"], "category": "groceries",
+                         "cut_pct": 30}, df, ctx))
+
+
+def test_swapped_peak_and_after_values_are_caught_and_corrected(world):
+    df, ctx, _, _ = world
+    peak, after = _true_vals(world)
+    assert after < peak - 2
+    good = f"Storm peak {peak:.0f}%, cutting groceries by 30% lowers it to {after:.0f}%."
+    assert VF.audit(_storm_rec(world, good, peak, after), df, ctx) == []
+    swapped = f"Storm peak {after:.0f}%, cutting groceries by 30% lowers it to {peak:.0f}%."
+    issues = VF.audit(_storm_rec(world, swapped, peak, after), df, ctx)
+    assert any(i["type"] == "claim_order" for i in issues)
+    kept, dropped = VF.verify_all([_storm_rec(world, swapped, peak, after)], df, ctx=ctx)
+    assert kept and not dropped
+    assert kept[0]["text"].index(f"{peak:.0f}%") < kept[0]["text"].index(f"{after:.0f}%")
+    assert VF.audit(kept[0], df, ctx) == []
+
+
+def test_equal_peak_and_after_values_skip_order_rule(world):
+    df, ctx, _, _ = world
+    peak, _ = _true_vals(world)
+    t = f"Storm peak {peak:.0f}%, cutting groceries by 30% leaves it at {peak:.0f}%."
+    assert VF.audit(_storm_rec(world, t, peak, peak), df, ctx) == [] or all(
+        i["type"] != "claim_order" for i in VF.audit(_storm_rec(world, t, peak, peak), df, ctx))
+
+
+def test_percent_claim_must_appear_as_percent_token(world):
+    df, ctx, _, _ = world
+    peak, after = _true_vals(world)
+    t = f"Storm peak {peak:.0f} chance, cutting groceries by 30% lowers it to {after:.0f}%."
+    assert any(i["type"] == "claim_not_percent" for i in VF.audit(_storm_rec(world, t, peak, after), df, ctx))
+
+
+def test_claim_date_outside_recorded_storm_is_unverifiable(world):
+    df, ctx, _, rep = world
+    peak, after = _true_vals(world)
+    other = rep["calendar"][0]["date"]
+    t = f"Storm peak {peak:.0f}%, cutting groceries by 30% lowers it to {after:.0f}%."
+    issues = VF.audit(_storm_rec(world, t, peak, after, date=other), df, ctx)
+    assert any(i["type"] == "unverifiable" for i in issues)
+
+
+def test_weather_tolerance_is_half_a_point(world):
+    df, ctx, _, rep = world
+    pk = rep["storms"][0]["peak_p"] * 100
+    c = {"kind": "storm_peak", "date": rep["storms"][0]["peak_date"]}
+    assert V.check_claim(dict(c, value=pk + 0.4), df, ctx)["ok"]
+    assert not V.check_claim(dict(c, value=pk + 0.7), df, ctx)["ok"]
+
+
+def test_forecast_risk_text_has_no_unclaimed_worst_day_and_one_horizon(world):
+    fr = next(c for c in _cands(world) if c["trigger_type"] == "forecast_risk")
+    text = AD.advise([fr], None)[0]["text"]
+    assert "riskiest" not in text
+    assert fr["claims"][0]["horizon"] == fr["evidence"]["horizon"] == world[3]["horizon"]
+
+
+def test_pipeline_survives_weather_failure(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("weather exploded")
+    monkeypatch.setattr(graph.weather_engine, "report", boom)
+    df = load_persona("priya").df.copy()
+    opening = round(1_000.0 - float(df["amount"].sum()), 2)
+    out = graph.build_graph(None, Trace()).invoke(
+        {"run_id": "w4", "profile": "t", "request": {"type": "pipeline"}, "df": df, "opening": opening,
+         "corrections": {}, "goals": []})
+    assert out["weather"] is None and out["recs"]
+    fr = [r for r in out["recs"] if r["trigger_type"] == "forecast_risk"]
+    assert fr and fr[0]["verification"] == "evidence_only" and fr[0]["claims"] == []
     assert not any(r["trigger_type"] == "storm_warning" for r in out["recs"])

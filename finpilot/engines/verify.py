@@ -7,7 +7,7 @@ consistency checks (the number in the advice is exactly what the engine yields f
 opening balance), not an independent implementation.
 
 Weather claim values are percents (0..100). Tolerance: money kinds max(1, 2% of value); `pct_change`
-3 points; weather percent kinds 1 point absolute. Weather claims need `ctx = {"opening": float}`
+3 points; weather percent kinds 0.5 point absolute. Weather claims need `ctx = {"opening": float}`
 (balance = opening + sum of transaction amounts); without it they are unverifiable.
 """
 from __future__ import annotations
@@ -126,7 +126,7 @@ def check_claim(claim, df, ctx=None):
     if claim["kind"] == "pct_change":
         tol = 3.0
     elif claim["kind"] in WEATHER_KINDS:
-        tol = 1.0
+        tol = 0.5
     else:
         tol = max(1.0, 0.02 * abs(actual))
     return {"ok": abs(float(claim["value"]) - actual) <= tol, "actual": actual}
@@ -234,4 +234,27 @@ def claims_missing_from_text(text, claims):
         v = abs(float(c["value"]))
         if not any(matches(n, v) for n in nums):
             out.append(c)
+    return out
+
+
+def weather_text_issues(text, claims):
+    """Role binding for weather percent claims. Each must be stated as a percent token (a bare number does
+    not count), and when both storm_peak and storm_peak_after_cut are claimed (and differ) the text must state
+    the peak before the after-cut value, so swapped numbers cannot pass. Returns [(type, claim)]."""
+    toks = [t["value"] for t in text_numbers(text) if t["percent"]]
+    first, out = {}, []
+    for c in claims:
+        if not isinstance(c, dict) or c.get("kind") not in WEATHER_KINDS or not _numeric(c.get("value")):
+            continue
+        v = abs(float(c["value"]))
+        idx = next((i for i, n in enumerate(toks) if matches(n, v)), None)
+        if idx is None:
+            out.append(("claim_not_percent", c))
+        else:
+            first[c["kind"]] = (idx, v)
+    if "storm_peak" in first and "storm_peak_after_cut" in first:
+        (ip, vp), (ia, va) = first["storm_peak"], first["storm_peak_after_cut"]
+        if not matches(vp, va) and ia < ip:
+            out.append(("claim_order", next(c for c in claims if isinstance(c, dict)
+                                            and c.get("kind") == "storm_peak_after_cut")))
     return out

@@ -64,7 +64,7 @@ def build_candidates(findings, df, forecast=None, goals=None, weather=None, ctx=
         claims = []
         if weather and ctx:
             h = weather["headline"]
-            ev.update(buffer=weather["buffer"], p_any_breach=h["p_any_breach"], worst_day=h["worst_day"],
+            ev.update(horizon=weather["horizon"], buffer=weather["buffer"], p_any_breach=h["p_any_breach"], worst_day=h["worst_day"],
                       worst_p=h["worst_p"], n_storm_days=h["n_storm_days"])
             if weather["storms"]:
                 ev.update(storm_start=weather["storms"][0]["start"], storm_end=weather["storms"][0]["end"])
@@ -139,8 +139,7 @@ def template_text(rec):
         return (f"At the current pace there is a {e['p_overdraft']*100:.0f}% chance your balance goes negative "
                 f"within {e['horizon']} days, first around {e['risk_day']}. Across all {e['horizon']} days "
                 f"{_cv(rec, 'breach_probability', e['p_any_breach']*100):.0f}% of simulated futures dip below your "
-                f"safety buffer ({inr(e['buffer'])}); the riskiest day is {e['worst_day']} "
-                f"({e['worst_p']*100:.0f}%). Hold discretionary spending until then.")
+                f"safety buffer ({inr(e['buffer'])}). Hold discretionary spending until then.")
     if t == "forecast_risk":
         return (f"At the current pace there is a {e['p_overdraft']*100:.0f}% chance your balance goes negative "
                 f"within {e['horizon']} days, first around {e['risk_day']}. Hold discretionary spending until then.")

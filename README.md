@@ -123,6 +123,23 @@ Honest reading:
 - The net-flow APE of about 1.0 equals a flat forecast (exactly 1.0 by definition). It should not be read as skill.
 - n = 9 forecast months from three personas drawn from one generator: the differences are indicative, not statistically tested.
 
+#### Forecast refinement attempt: no improvement found
+We tried to improve the forecast and adopted nothing; the engine above is unchanged. Rule, fixed before scoring: adopt a change only if, over 3 personas x 3 origins on **each** generator, month-end MAE / monthly spend improves by at least 0.01, or band coverage moves at least 0.03 toward 0.80, while balance MAPE worsens by at most 0.002 (original) / 0.01 (OOD) and coverage moves at most 0.02 away from 0.80. Knobs were tuned only by inner backtests on the training slice. Model rows only (MAPE / month-end MAE per monthly spend / coverage); reproduce with `python -m eval.forecast_experiments` (full log in `eval/forecast_experiments.md`).
+
+| Candidate | Original generator | OOD generator | Meets rule |
+|---|---|---|---|
+| committed engine | 0.0432 / 0.1339 / 0.805 | 0.2457 / 0.1848 / 0.7468 | - |
+| a: band calibration (spread x k, k tuned in-sample) | 0.0432 / 0.1339 / 0.9408 | 0.2457 / 0.1848 / 0.9419 | no: overshoots coverage |
+| b1: last amount for low-cv recurring bills | 0.0432 / 0.1338 / 0.805 | 0.2459 / 0.1853 / 0.7397 | no |
+| b2: resample non-recurring credits (refunds, reimbursements) | 0.0432 / 0.1339 / 0.805 | 0.2403 / 0.1507 / 0.9131 | no: no gain on original, OOD band too wide |
+| c: blend with last month's same-day spend (w tuned in-sample) | 0.0418 / 0.128 / 0.765 | 0.2457 / 0.1848 / 0.7468 | no |
+| d: day-of-month profile blend (v tuned in-sample) | 0.0496 / 0.1447 / 0.6832 | 0.3075 / 0.2229 / 0.4662 | no: worse |
+| b2 + c | 0.0418 / 0.128 / 0.765 | 0.2403 / 0.1507 / 0.9131 | no |
+| fit window tuned in-sample (60/90/120/180 days) | 0.045 / 0.1467 / 0.8447 | 0.2222 / 0.1514 / 0.7621 | no |
+| sensitivity only: fixed 60-day window | 0.0397 / 0.1075 / 0.7824 | 0.2087 / 0.1497 / 0.8159 | passes, but not eligible |
+
+The fixed 60-day window passes the numeric rule, but choosing it would mean picking the window by looking at held-out results (120 and 180 days are mixed), and the in-sample choice of the same knob fails, so it was not adopted. Re-running the committed engine with four other Monte Carlo seeds moves month-end MAE by up to about 0.004 (original) and 0.012 (OOD) and coverage by up to 0.029, so differences of that size are noise. The main remaining error is a positive bias in discretionary spend when one-off charges or a spike month fall inside the 90-day window.
+
 ### Calibration
 Event: balance falls more than 10% below its starting level within 30 days. n = 102 (overlapping origins, so the effective n is far smaller), mean predicted 0.6833, observed 0.7255, Brier 0.096 against 0.1992 for a constant base-rate forecast, Brier skill score 0.5182.
 
@@ -163,7 +180,7 @@ Personas: kavya, rohan, isha. Same author wrote both generators: a robustness ch
 | trailing_mean | 0.8749 (0.6958–0.9688) | 0.3799 (0.2338–0.588) | 0.2283 (0.2242–0.2306) | - |
 <!-- eval-results:end ood -->
 
-What dropped: the rules-only categorizer fell from 0.8578 accuracy to 0.3327 (coverage 0.4201); large-charge precision fell to 0.1609 (recall 1.0) because high-variance merchants such as rides and groceries produce many false flags; the payday trigger raised false findings where none was planted (precision 0.0); unused-subscription recall fell to 0.3333, because the engine matches service groups on exact merchant strings and merchants that normalise differently (e.g. an AUTOPAY suffix) are missed; category_spike recall stayed 1.0 with precision 0.3333 (capped by precision@3). What held: duplicates (precision 1.0, recall 1.0) and monthly subscription detection (precision 1.0, recall 1.0). Forecast: the model's balance MAPE is 0.2457 against 0.9679 for flat balance and 0.5423 for seasonal-naive, but its month-end MAE relative to monthly spend (0.1848) is worse than flat balance (0.0885), and its p10-p90 coverage is 0.7468 against a nominal 0.80.
+What dropped: the rules-only categorizer fell from 0.8578 accuracy to 0.3327 (coverage 0.4201); large-charge precision fell to 0.1609 (recall 1.0) because high-variance merchants such as rides and groceries produce many false flags; the payday trigger raised false findings where none was planted (precision 0.0); unused-subscription recall fell to 0.3333, because the engine matches service groups on exact merchant strings and merchants that normalise differently (e.g. an AUTOPAY suffix) are missed; category_spike recall stayed 1.0 with precision 0.3333 (capped by precision@3). What held: duplicates (precision 1.0, recall 1.0) and monthly subscription detection (precision 1.0, recall 1.0). Forecast: the model's balance MAPE is 0.2457 against 0.9679 for flat balance and 0.5423 for seasonal-naive, but its month-end MAE relative to monthly spend (0.1848) is worse than flat balance (0.0885), and its p10-p90 coverage is 0.7468 against a nominal 0.80. The refinement attempt above did not find an in-sample-tuned change that fixes this on both generators.
 
 Disclosure: the second generator was adjusted once after its first draft scored 0.19 rules-only categorization accuracy (the share of rule-known mainstream merchants was raised and a landlord string containing RENT was added), so the 0.33 headline is an upper-biased view of how the rules cope with messy data, not an unbiased measurement. Further caveats: friend-reimbursement rows carry truth 'dining'; cash-withdrawal and EMI rows carry truth 'other', which the rules never emit, so they count as categorization misses; opening balances were hand-sized to keep balances plausible, and month-end MAE relative to monthly spend is scale-sensitive to that choice. Two generator truth-labelling bugs were also fixed after a first scoring run (see the methodology list in `eval/results.md`).
 
@@ -191,6 +208,7 @@ Not run: no dataset supplied (see `eval/real_data.py`).
 - Detection, forecast and calibration engines are scored on oracle ground-truth categories, so end-to-end quality is bounded by categorization accuracy (0.86 rules-only; hybrid not measured).
 - Unused-subscription detection is a heuristic.
 - Tiny samples: 9 forecast months, 1-2 cancellations per persona.
+- Forecast skill: the model ties seasonal-naive on balance MAPE, is worse than it on month-end error (original generator), and is worse than a flat balance on month-end error out of distribution; a measured refinement attempt found no change worth adopting (see "Forecast refinement attempt").
 - The full list is in `eval/results.md` ("Methodology and limitations").
 
 ## Key design decisions

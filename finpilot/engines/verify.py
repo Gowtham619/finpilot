@@ -1,3 +1,15 @@
+"""Claim recomputation and text auditing.
+
+Independence caveat: the aggregation claims (`month_total`, `pct_change`) reuse the spike engine's
+aggregation, and the weather claims (`breach_probability`, `storm_peak`, `storm_peak_after_cut`) re-fit the
+model from the raw transactions and re-run the SAME Monte Carlo engine (seed 0, n 1000). They are
+consistency checks (the number in the advice is exactly what the engine yields from the raw data and the
+opening balance), not an independent implementation.
+
+Weather claim values are percents (0..100). Tolerance: money kinds max(1, 2% of value); `pct_change`
+3 points; weather percent kinds 1 point absolute. Weather claims need `ctx = {"opening": float}`
+(balance = opening + sum of transaction amounts); without it they are unverifiable.
+"""
 from __future__ import annotations
 
 import math
@@ -7,11 +19,59 @@ import pandas as pd
 
 from .analyze import category_month_stats
 
+WEATHER_KINDS = ("breach_probability", "storm_peak", "storm_peak_after_cut")
+WEATHER_HORIZON = 60
+
 ALLOWED_CONSTANTS = {12, 24, 30, 60, 90, 100}
 
 
-def _recompute(claim, df):
+def _finite(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def _weather_setup(df, ctx):
+    """(model, balance, buffer) or None. Buffer is the UNROUNDED default buffer."""
+    from . import forecast as F
+    from . import weather as W
+    if not isinstance(ctx, dict) or not _finite(ctx.get("opening")):
+        return None
+    model = F.fit(df)
+    return model, F.current_balance(df, ctx["opening"]), W.default_buffer(model)
+
+
+def _recompute_weather(claim, df, ctx):
+    from . import forecast as F
+    from . import weather as W
+    setup = _weather_setup(df, ctx)
+    if setup is None:
+        return None
+    model, bal, buf = setup
     k = claim["kind"]
+    if k == "breach_probability":
+        h = claim["horizon"]
+        if not _finite(h) or h != int(h) or not 1 <= h <= 365:
+            return None
+        res = F.monte_carlo(model, bal, int(h), 1000, 0)
+        return round(float((res.paths < buf).any(axis=1).mean()) * 100, 1)
+    date = str(pd.Timestamp(claim["date"]).date())
+    cal = W.risk_calendar(model, bal, WEATHER_HORIZON, 1000, 0, buffer=buf)
+    storm = next((s for s in W.storms(cal) if s["start"] <= date <= s["end"]), None)
+    if storm is None:
+        return None
+    if k == "storm_peak":
+        return round(storm["peak_p"] * 100, 1)
+    cut = claim["cut_pct"]
+    if not _finite(cut) or not 0 <= cut <= 100 or claim["category"] not in model.cats:
+        return None
+    cal2 = W.risk_calendar(model, bal, WEATHER_HORIZON, 1000, 0, buffer=buf,
+                           cuts={claim["category"]: cut / 100.0})
+    return round(max(c["p_below_buffer"] for c in cal2 if storm["start"] <= c["date"] <= storm["end"]) * 100, 1)
+
+
+def _recompute(claim, df, ctx=None):
+    k = claim["kind"]
+    if k in WEATHER_KINDS:
+        return _recompute_weather(claim, df, ctx)
     if k in ("monthly_cost", "annual_cost"):
         g = df[(df["merchant"] == claim["merchant"]) & (df["amount"] < 0)].sort_values("date").tail(3)
         if g.empty:
@@ -31,7 +91,9 @@ def _recompute(claim, df):
 
 
 _NEEDS = {"monthly_cost": ("merchant",), "annual_cost": ("merchant",), "month_total": ("category", "month"),
-          "pct_change": ("category", "month"), "txn_amount": ("txn_id",)}
+          "pct_change": ("category", "month"), "txn_amount": ("txn_id",),
+          "breach_probability": ("horizon",), "storm_peak": ("date",),
+          "storm_peak_after_cut": ("date", "category", "cut_pct")}
 
 
 def _well_formed(claim):
@@ -40,12 +102,12 @@ def _well_formed(claim):
     return all(claim.get(k) is not None for k in _NEEDS[claim["kind"]])
 
 
-def recompute(claim, df):
+def recompute(claim, df, ctx=None):
     """Recompute a claim from transactions; None for anything malformed or unrecomputable."""
     if not _well_formed(claim):
         return None
     try:
-        v = _recompute(claim, df)
+        v = _recompute(claim, df, ctx)
         if v is None or isinstance(v, (bool, complex)) or not math.isfinite(float(v)):
             return None
         return float(v)
@@ -57,11 +119,16 @@ def _numeric(x):
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
-def check_claim(claim, df):
-    actual = recompute(claim, df)
+def check_claim(claim, df, ctx=None):
+    actual = recompute(claim, df, ctx)
     if actual is None or not _numeric(claim.get("value")):
         return {"ok": False, "actual": actual if actual is not None and _well_formed(claim) else None}
-    tol = 3.0 if claim["kind"] == "pct_change" else max(1.0, 0.02 * abs(actual))
+    if claim["kind"] == "pct_change":
+        tol = 3.0
+    elif claim["kind"] in WEATHER_KINDS:
+        tol = 1.0
+    else:
+        tol = max(1.0, 0.02 * abs(actual))
     return {"ok": abs(float(claim["value"]) - actual) <= tol, "actual": actual}
 
 
@@ -133,7 +200,7 @@ def ungrounded_numbers(text, claims, evidence):
     allowed = list(_flatten_numbers(vals)) + list(_flatten_numbers(evidence))
     allowed += [a * 100 for a in allowed if 0 < abs(a) <= 1]  # probabilities quoted as percents
     pct_ok = [a * 100 for a in allowed if abs(a) <= 1]
-    pct_ok += [float(c["value"]) for c in claims if isinstance(c, dict) and c.get("kind") == "pct_change"
+    pct_ok += [float(c["value"]) for c in claims if isinstance(c, dict) and c.get("kind") in ("pct_change", *WEATHER_KINDS)
                and _numeric(c.get("value"))]
     pct_ok += [v for k, v in _keyed_numbers(evidence) if _PCT_KEY.search(k)]
     out = []

@@ -23,11 +23,11 @@ def _checkable_text(rec):
     return text
 
 
-def audit(rec, df):
+def audit(rec, df, ctx=None):
     issues = []
     text = _checkable_text(rec)
     for c in rec["claims"]:
-        r = check_claim(c, df)
+        r = check_claim(c, df, ctx)
         if r["actual"] is None:
             issues.append({"type": "unverifiable", "claim": c})
         elif not r["ok"]:
@@ -51,12 +51,12 @@ def _describe(issues):
     return "; ".join(_describe_one(i) for i in issues)
 
 
-def verify_all(recs, df, llm=None, emit=None):
+def verify_all(recs, df, llm=None, emit=None, ctx=None):
     emit = emit or (lambda kind, summary, data=None: None)
     kept, dropped = [], []
     for rec in recs:
         rec["verification"] = "recomputed" if rec["claims"] else "evidence_only"
-        issues = audit(rec, df)
+        issues = audit(rec, df, ctx)
         if not issues:
             if rec["claims"]:
                 rec.update(verification="recomputed", verified=True,
@@ -96,7 +96,7 @@ def verify_all(recs, df, llm=None, emit=None):
             rec["text"] = candidate_text if candidate_text else template_text(rec)
             if not candidate_text:
                 rec["model"] = "template"
-            if not audit(rec, df):
+            if not audit(rec, df, ctx):
                 rec.update(verified=True, verifier_notes=f"{notes}; corrected via {how}"
                            + ("; text is deterministic template" if how == "template" else ""))
                 emit("corrected", f"corrected via {how}: {rec['action']}", {"rec": rec["id"]})

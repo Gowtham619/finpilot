@@ -61,7 +61,8 @@ def _persist(profile):
             db.save_transactions(s, profile, state["df"], state["opening"])
             db.save_findings(s, profile, _clean(state["findings"]))
             db.save_recs(s, profile, _clean(state["recs"]))
-            db.save_forecast(s, profile, _clean({"forecast": state["forecast"], "overview": state["overview"]}))
+            db.save_forecast(s, profile, _clean({"forecast": state["forecast"], "overview": state["overview"],
+                                                   "weather": state.get("weather")}))
             by_name = {g["name"]: g["pk"] for g in db.list_goals(s, profile)}
             for g in state["forecast"]["goals"]:
                 if "p_met" not in g:  # error entry {"name", "error"}

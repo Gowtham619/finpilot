@@ -5,6 +5,8 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from .agents import advisor, analyzer, categorizer, forecaster, simulator, verifier
+from .engines import weather as weather_engine
+from .engines.forecast import current_balance
 from .trace import trace as default_trace
 
 
@@ -19,6 +21,7 @@ class State(TypedDict, total=False):
     findings: list
     overview: str
     forecast: dict
+    weather: dict
     model: Any
     balance: float
     recs: list
@@ -57,11 +60,17 @@ def build_graph(llm=None, tr=default_trace, persist=None):
         emit(state, "forecaster", "tool", "fitting model and running 1,000 Monte Carlo paths")
         fc = forecaster.run(state["df"], state["opening"], state.get("goals") or [], llm)
         emit(state, "forecaster", "result", fc["narrative"], fc["summary"])
-        return {"forecast": _public(fc), "model": fc["model"], "balance": fc["balance"]}
+        try:  # same unrounded balance the Verifier rebuilds from opening + transactions
+            wx = weather_engine.report(fc["model"], current_balance(state["df"], state["opening"]))
+        except Exception as e:  # weather is additive: degrade, never crash the pipeline
+            wx = None
+            emit(state, "forecaster", "tool", f"weather unavailable: {e}")
+        return {"forecast": _public(fc), "model": fc["model"], "balance": fc["balance"], "weather": wx}
 
     def n_advise(state):
         cands = advisor.build_candidates(state["findings"], state["df"], state["forecast"],
-                                         state["forecast"]["goals"])
+                                         state["forecast"]["goals"], weather=state.get("weather"),
+                                         ctx={"opening": state["opening"]})
         emit(state, "advisor", "tool", f"{len(cands)} candidate actions from findings and forecast")
         recs = advisor.advise(cands, llm, getattr(llm, "model", "") if llm else "")
         n_llm = sum(r.get("model") != "template" for r in recs)
@@ -73,7 +82,8 @@ def build_graph(llm=None, tr=default_trace, persist=None):
         emit(state, "verifier", "start", "recomputing every cited number from raw transactions")
         kept, dropped = verifier.verify_all(
             state["recs"], state["df"], llm,
-            emit=lambda kind, summary, data=None: emit(state, "verifier", kind, summary, data))
+            emit=lambda kind, summary, data=None: emit(state, "verifier", kind, summary, data),
+            ctx={"opening": state["opening"]})
         emit(state, "verifier", "result", f"{len(kept)} verified, {len(dropped)} dropped")
         return {"recs": kept, "dropped": dropped}
 

@@ -199,7 +199,7 @@ def eval_ood(personas):
 
 def ood_notes(res):
     """Methodology bullets for the OOD block, built from the numbers actually measured."""
-    o, c, d, f = res["ood"], res["categorization"]["rules_only"], res["ood"]["detection"], res["ood"]["forecast"]
+    o, d = res["ood"], res["ood"]["detection"]
     oc = o["categorization"]["rules_only"]
     notes = [
         "Out-of-distribution check: a second generator (eval/generate_messy.py) with different merchants, noisy UPI/NEFT/IMPS/card "

@@ -150,7 +150,6 @@ def generate_messy(seed, months=12, end="2026-09", salary=54000, gym_used=False,
     lenders = ["HDFC BANK LTD EMI", "BAJAJ FINSERV EMI"][:emis]
     streams = {  # name -> [fmt, day]
         "rent": [stable_fmt(), int(rng.integers(1, 6))],
-        "salary": [None, 0],
         "tatapower": [stable_fmt(), int(rng.integers(8, 14))],
         "fiber": [stable_fmt(), int(rng.integers(14, 19))],
         "jio": [stable_fmt(), int(rng.integers(18, 24))],

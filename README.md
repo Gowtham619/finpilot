@@ -85,30 +85,36 @@ Source of truth: `eval/results.md` and `eval/results.json`. The committed run is
 When run with an LLM, `run_eval` first pings the model and aborts with an error if it is unavailable (so rules-only numbers are never recorded as "hybrid"), records how many rows the LLM actually labelled (`n_llm_labeled`), and computes the grounding rate only over recommendations the LLM wrote (template recommendations are excluded; with none it reports "n/a").
 
 ### Categorization
+<!-- eval-results:begin categorization -->
 | Method | Accuracy | Macro-F1 | Coverage |
 |---|---|---|---|
-| rules_only | 0.8578 (0.8522-0.8685) | 0.7646 (0.7599-0.7683) | 0.8578 (0.8522-0.8685) |
-| hybrid (rules + LLM) | not run: to be filled by `make eval` with a Mesh key | | |
+| rules_only | 0.8578 (0.8522–0.8685) | 0.7646 (0.7599–0.7683) | 0.8578 (0.8522–0.8685) |
+| hybrid | n/a | n/a | n/a |
+<!-- eval-results:end categorization -->
 
 ### Detection (precision / recall; engines scored on oracle categories)
+<!-- eval-results:begin detection -->
 | Task | Precision | Recall |
 |---|---|---|
-| large_charge | 1.0 | 1.0 |
-| duplicate | 1.0 | 1.0 |
-| category_spike | 0.3333 | 1.0 |
-| subscriptions | 1.0 | 1.0 |
-| unused_subscriptions | 1.0 | 1.0 |
-| payday_trigger | 1.0 | 1.0 |
+| large_charge | 1.0 (1.0–1.0) | 1.0 (1.0–1.0) |
+| duplicate | 1.0 (1.0–1.0) | 1.0 (1.0–1.0) |
+| category_spike | 0.3333 (0.3333–0.3333) | 1.0 (1.0–1.0) |
+| subscriptions | 1.0 (1.0–1.0) | 1.0 (1.0–1.0) |
+| unused_subscriptions | 1.0 (1.0–1.0) | 1.0 (1.0–1.0) |
+| payday_trigger | 1.0 (1.0–1.0) | 1.0 (1.0–1.0) |
+<!-- eval-results:end detection -->
 
 `category_spike` precision is capped at 1/3 by construction: it is precision@3 (`max_findings=3`) and each persona has one planted spike. Perfect scores elsewhere are on synthetic data where the same generator planted the targets; they show the engines work on that data, not that they generalize.
 
 ### Forecast vs baselines (held-out months; 3 personas x 3 origins = 9 months)
+<!-- eval-results:begin forecast -->
 | Method | Balance MAPE | Month-end MAE / monthly spend | Pinball / monthly spend | Net-flow APE | p10-p90 coverage (nominal 0.80) |
 |---|---|---|---|---|---|
-| model | 0.0432 (0.0322-0.0556) | 0.1339 (0.0964-0.1795) | 0.0247 (0.0225-0.027) | 1.0089 (0.6762-1.304) | 0.805 (0.7627-0.8477) |
-| flat_balance | 0.2325 (0.2069-0.2802) | 0.1619 (0.0999-0.2777) | 0.2404 (0.2009-0.2963) | 1.0 (1.0-1.0) | - |
-| seasonal_naive (last-month replay) | 0.044 (0.0241-0.0569) | 0.1024 (0.0825-0.1318) | 0.0381 (0.0307-0.0513) | 0.9657 (0.3661-1.7367) | - |
-| trailing-30d-mean (spikes on salary) | 0.4239 (0.3198-0.5464) | 0.8297 (0.7413-0.8841) | 0.4076 (0.3644-0.4528) | 6.1373 (2.8037-7.8293) | - |
+| model | 0.0432 (0.0322–0.0556) | 0.1339 (0.0964–0.1795) | 0.0247 (0.0225–0.027) | 1.0089 (0.6762–1.304) | 0.805 (0.7627–0.8477) |
+| flat_balance | 0.2325 (0.2069–0.2802) | 0.1619 (0.0999–0.2777) | 0.2404 (0.2009–0.2963) | 1.0 (1.0–1.0) | - |
+| seasonal_naive | 0.044 (0.0241–0.0569) | 0.1024 (0.0825–0.1318) | 0.0381 (0.0307–0.0513) | 0.9657 (0.3661–1.7367) | - |
+| trailing-30d-mean (spikes on salary) | 0.4239 (0.3198–0.5464) | 0.8297 (0.7413–0.8841) | 0.4076 (0.3644–0.4528) | 6.1373 (2.8037–7.8293) | - |
+<!-- eval-results:end forecast -->
 
 Honest reading:
 - On balance MAPE the model (0.0432) beats flat-balance (0.2325) and the trailing-30d-mean (0.4239) baselines, and **ties** the seasonal-naive baseline (0.0440).
@@ -120,6 +126,7 @@ Honest reading:
 ### Calibration
 Event: balance falls more than 10% below its starting level within 30 days. n = 102 (overlapping origins, so the effective n is far smaller), mean predicted 0.6833, observed 0.7255, Brier 0.096 against 0.1992 for a constant base-rate forecast, Brier skill score 0.5182.
 
+<!-- eval-results:begin calibration -->
 | Predicted bin | Count | Mean predicted | Observed |
 |---|---|---|---|
 | 0.0-0.2 | 18 | 0.0457 | 0.2222 |
@@ -127,12 +134,14 @@ Event: balance falls more than 10% below its starting level within 30 days. n = 
 | 0.4-0.6 | 9 | 0.5078 | 0.5556 |
 | 0.6-0.8 | 7 | 0.7174 | 1.0 |
 | 0.8-1.0 | 58 | 0.9741 | 0.9655 |
+<!-- eval-results:end calibration -->
 
 The skill score beats the base rate, but the reliability bins show weakness: the model under-predicts in the low and 0.6-0.8 bins (0.0457 predicted vs 0.2222 observed; 0.7174 vs 1.0), with small counts.
 
 ### Out-of-distribution check (second generator, engines unchanged)
 Personas: kavya, rohan, isha. Same author wrote both generators: a robustness check, not independent validation. Planted per persona: 2 duplicates, 2 large charges, 1 category spike (travel), unused subscriptions [2, 1, 2], refunds [16, 19, 10]. Cells show mean (min–max) across personas.
 
+<!-- eval-results:begin ood -->
 | Categorization (rules-only) | Accuracy | Macro-F1 | Coverage |
 |---|---|---|---|
 | rules_only | 0.3327 (0.3015–0.3653) | 0.3564 (0.3169–0.4175) | 0.4201 (0.4027–0.4337) |
@@ -152,8 +161,11 @@ Personas: kavya, rohan, isha. Same author wrote both generators: a robustness ch
 | flat_balance | 0.9679 (0.743–1.1049) | 0.0885 (0.0392–0.1443) | 0.2432 (0.2378–0.2533) | - |
 | seasonal_naive | 0.5423 (0.4272–0.7199) | 0.4533 (0.2882–0.5654) | 0.164 (0.1345–0.1909) | - |
 | trailing_mean | 0.8749 (0.6958–0.9688) | 0.3799 (0.2338–0.588) | 0.2283 (0.2242–0.2306) | - |
+<!-- eval-results:end ood -->
 
 What dropped: the rules-only categorizer fell from 0.8578 accuracy to 0.3327 (coverage 0.4201); large-charge precision fell to 0.1609 (recall 1.0) because high-variance merchants such as rides and groceries produce many false flags; the payday trigger raised false findings where none was planted (precision 0.0); unused-subscription recall fell to 0.3333, because the engine matches service groups on exact merchant strings and merchants that normalise differently (e.g. an AUTOPAY suffix) are missed; category_spike recall stayed 1.0 with precision 0.3333 (capped by precision@3). What held: duplicates (precision 1.0, recall 1.0) and monthly subscription detection (precision 1.0, recall 1.0). Forecast: the model's balance MAPE is 0.2457 against 0.9679 for flat balance and 0.5423 for seasonal-naive, but its month-end MAE relative to monthly spend (0.1848) is worse than flat balance (0.0885), and its p10-p90 coverage is 0.7468 against a nominal 0.80.
+
+Disclosure: the second generator was adjusted once after its first draft scored 0.19 rules-only categorization accuracy (the share of rule-known mainstream merchants was raised and a landlord string containing RENT was added), so the 0.33 headline is an upper-biased view of how the rules cope with messy data, not an unbiased measurement. Further caveats: friend-reimbursement rows carry truth 'dining'; cash-withdrawal and EMI rows carry truth 'other', which the rules never emit, so they count as categorization misses; opening balances were hand-sized to keep balances plausible, and month-end MAE relative to monthly spend is scale-sensitive to that choice. Two generator truth-labelling bugs were also fixed after a first scoring run (see the methodology list in `eval/results.md`).
 
 This is a robustness check, not independent validation: the same author wrote both generators and detection and forecast are scored on oracle categories. It says nothing about real bank data.
 
@@ -161,11 +173,13 @@ This is a robustness check, not independent validation: the same author wrote bo
 Not run. Produced by `make eval` (equivalently `python -m eval.run_eval`) with `MESH_API_KEY` set; results are written to `eval/results.md` and `eval/results.json`. No numbers are claimed here.
 
 ### Advice backtest (last 90 days; assumes every recommendation was followed)
+<!-- eval-results:begin backtest -->
 | Persona | Cancel savings (headline) | % of spend | Estimated excess over median (noisy upper bound) | Cancelled (correct/total) | Unused in truth | Recall |
 |---|---|---|---|---|---|---|
 | priya | ₹5,397 | 3.1% | ₹3,528 (2.1%) | 2/2 | 2 | 2/2 |
 | arjun | ₹5,397 | 3.5% | ₹13,754 (9.1%) | 2/2 | 2 | 2/2 |
 | meera | ₹897 | 0.6% | ₹2,976 (1.9%) | 1/1 | 1 | 1/1 |
+<!-- eval-results:end backtest -->
 
 This is an optimistic upper bound: it assumes the user complied with every recommendation on the cutoff day, and each persona has only 1-2 cancellations, so cancel precision/recall are anecdotal.
 
@@ -173,7 +187,7 @@ This is an optimistic upper bound: it assumes the user complied with every recom
 Not run: no dataset supplied (see `eval/real_data.py`).
 
 ### Limitations
-- All data is synthetic. The main tables come from one generator that also planted the detection targets; the out-of-distribution check adds a second generator by the same author (a robustness check, not independent validation), and several engine results degrade on it (see that section).
+- All data is synthetic. The main tables come from one generator that also planted the detection targets; the out-of-distribution check adds a second generator by the same author (a robustness check, not independent validation), and several engine results degrade on it (see that section). That generator was tuned once after a 0.19 first-draft categorization score, so its 0.33 is upper-biased, not an unbiased measurement.
 - Detection, forecast and calibration engines are scored on oracle ground-truth categories, so end-to-end quality is bounded by categorization accuracy (0.86 rules-only; hybrid not measured).
 - Unused-subscription detection is a heuristic.
 - Tiny samples: 9 forecast months, 1-2 cancellations per persona.

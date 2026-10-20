@@ -3,7 +3,7 @@ let currentES = null;
 let profile = new URLSearchParams(location.search).get("profile") || "priya";
 const charts = {};
 // Chart.js is loaded from a CDN without SRI (known, accepted for this demo).
-const TABS = [["dashboard", "Dashboard"], ["afford", "Can I afford…?"], ["duel", "Decision duel"],
+const TABS = [["dashboard", "Dashboard"], ["weather", "Money Weather"], ["afford", "Can I afford…?"], ["duel", "Decision duel"],
               ["recs", "Recommendations"], ["goals", "Goals"], ["chat", "Chat"]];
 
 function el(tag, cls, text) {
@@ -116,13 +116,222 @@ async function loadDigests() {
 }
 async function refresh() {
   renderState(await api(`/api/state/${encodeURIComponent(profile)}`));
+  weatherInvalidate();
   loadDigests().catch(fail);
+}
+
+// ---------------------------------------------------------------- Money Weather
+const W = { scenario: "none", lifestyle: 1.0, cuts: {}, seq: 0, timer: null, loaded: false, data: null, hl: null };
+const SCENARIOS = [["none", "Normal 60 days"], ["salary_skip", "Job-loss drill"],
+                   ["purchase", "Big purchase"], ["emergency", "Medical emergency"]];
+const LABELS = { clear: ["☀", "Clear skies"], cloudy: ["⛅", "Cloudy"], rain: ["🌧", "Rain possible"], storm: ["⛈", "Storm ahead"] };
+const SEVERITY = ["clear", "cloudy", "rain", "storm"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function fmtDate(iso) { const [, m, d] = iso.split("-"); return `${MONTHS[+m - 1]} ${+d}`; }
+function weekdayMon(iso) { const [y, m, d] = iso.split("-").map(Number); return (new Date(y, m - 1, d).getDay() + 6) % 7; }
+function worstLabel(cal) {
+  return cal.reduce((w, c) => (SEVERITY.indexOf(c.label) > SEVERITY.indexOf(w) ? c.label : w), "clear");
+}
+function dayTitle(c, buffer) {
+  return `${fmtDate(c.date)}: ${pct(c.p_below_buffer)} chance of dropping below your safety buffer (${money(buffer)}); ` +
+    `balance p10 ${money(c.p10)}, median ${money(c.p50)}, p90 ${money(c.p90)}`;
+}
+function weatherQueryString() {
+  const q = new URLSearchParams({ lifestyle: String(W.lifestyle), horizon: "60", scenario: W.scenario });
+  const amt = $("#wAmount").value.trim();
+  if (amt && W.scenario !== "none" && W.scenario !== "salary_skip") q.set("amount", amt);
+  if (Object.keys(W.cuts).length) q.set("cuts", JSON.stringify(W.cuts));
+  return q.toString();
+}
+async function weatherQuery() {
+  clearTimeout(W.timer);
+  const mine = ++W.seq;  // request counter: only the newest response may render
+  $("#wBusy").textContent = "Updating…";
+  $("#weather").setAttribute("aria-busy", "true");
+  try {
+    const d = await api(`/api/weather/${encodeURIComponent(profile)}?${weatherQueryString()}`);
+    if (mine !== W.seq) return;
+    W.data = d; W.loaded = true;
+    follow(d.run_id);
+    weatherRender(d);
+  } catch (e) {
+    if (mine !== W.seq) return;
+    W.data = null; W.loaded = false;
+    weatherEmpty(/no data/i.test(e.message) ? "Load a persona first." : "Could not load the weather: " + e.message);
+    fail(e);
+  } finally {
+    if (mine === W.seq) { $("#wBusy").textContent = ""; $("#weather").removeAttribute("aria-busy"); }
+  }
+}
+function weatherEmpty(msg) {
+  $("#wMsg").textContent = msg;
+  ["#wHeadline", "#wFlows", "#wCal", "#wStorms", "#wAutopsy", "#wUmbrellas", "#wApplied"].forEach((s) => $(s).replaceChildren());
+  $("#wChip").replaceChildren(); $("#wChip").className = "";
+  $("#wBody").hidden = true;
+}
+function weatherInvalidate() {
+  W.loaded = false; W.cuts = {}; W.hl = null;
+  if ($("#weather").classList.contains("on")) weatherQuery().catch(fail);
+}
+function weatherEnter() { if (!W.loaded) weatherQuery().catch(fail); }
+
+function weatherRender(d) {
+  $("#wMsg").textContent = "";
+  $("#wBody").hidden = false;
+  renderWeatherHeadline(d);
+  renderCalendar(d);
+  renderStorms(d);
+  renderAutopsy(d);
+  renderUmbrellas(d);
+  if (d.scenario_amount != null && (d.scenario === "purchase" || d.scenario === "emergency") && !$("#wAmount").value) {
+    $("#wAmount").value = Math.round(d.scenario_amount);
+  }
+  document.querySelectorAll("#wScen button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.s === W.scenario)));
+  $("#wAmount").disabled = !(W.scenario === "purchase" || W.scenario === "emergency");
+}
+function renderWeatherHeadline(d) {
+  const worst = worstLabel(d.calendar);
+  const [glyph, text] = LABELS[worst];
+  const chip = $("#wChip"); chip.replaceChildren(el("span", "", glyph + " "), el("span", "", text));
+  chip.className = "chip " + worst;
+  $("#wHeadline").replaceChildren(el("p", "", d.headline_text));
+  const fl = $("#wFlows"); fl.replaceChildren();
+  (d.scenario_flows || []).forEach((f) => {
+    const verb = f.amount < 0 ? "−" : "+";
+    fl.append(el("span", "tag", `planned: ${f.label} ${verb}${money(Math.abs(f.amount))} on ${fmtDate(f.date)}`));
+  });
+  if (d.scenario_note) fl.append(el("div", "wnote", d.scenario_note));
+}
+function renderCalendar(d) {
+  const g = $("#wCal"); g.replaceChildren();
+  ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].forEach((n) => g.append(el("div", "dow", n)));
+  if (!d.calendar.length) return;
+  for (let i = 0; i < weekdayMon(d.calendar[0].date); i++) g.append(el("div", "day empty"));
+  d.calendar.forEach((c) => {
+    const cell = el("div", "day " + c.label);
+    cell.tabIndex = 0;
+    cell.dataset.date = c.date;
+    const t = dayTitle(c, d.buffer);
+    cell.title = t; cell.setAttribute("aria-label", t);
+    cell.append(el("small", "", String(+c.date.slice(8))), el("span", "g", LABELS[c.label][0]), el("b", "", pct(c.p_below_buffer)));
+    g.append(cell);
+  });
+  highlightStorm(W.hl, false);
+}
+function highlightStorm(st, scroll) {
+  W.hl = st;
+  document.querySelectorAll("#wCal .day[data-date]").forEach((c) => {
+    c.classList.toggle("hl", !!st && c.dataset.date >= st.start && c.dataset.date <= st.end);
+  });
+  document.querySelectorAll("#wStorms .storm").forEach((c) => c.classList.toggle("sel", !!st && c.dataset.start === st.start));
+  if (st && scroll) $("#wAutopsyBox").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function renderStorms(d) {
+  const box = $("#wStorms"); box.replaceChildren();
+  if (!d.storms.length) { box.append(el("div", "card", "No storms: no run of days at 25% risk or more.")); return; }
+  d.storms.forEach((st) => {
+    const c = el("div", "card storm " + st.label);
+    c.tabIndex = 0; c.setAttribute("role", "button"); c.dataset.start = st.start;
+    c.append(el("b", "", `${LABELS[st.label][0]} ${fmtDate(st.start)} – ${fmtDate(st.end)}`),
+             el("div", "", `${st.days} days, peak ${pct(st.peak_p)} on ${fmtDate(st.peak_date)} (${LABELS[st.label][1]})`));
+    const pick = () => highlightStorm(W.hl && W.hl.start === st.start ? null : st, true);
+    c.onclick = pick;
+    c.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } };
+    box.append(c);
+  });
+}
+function renderAutopsy(d) {
+  const a = d.autopsy, box = $("#wAutopsy"); box.replaceChildren();
+  box.append(el("p", "", `${a.n_failing} of ${a.n_paths} simulated futures dip below the buffer (${pct(a.p_any_breach)}).`),
+             el("p", "", d.autopsy_text));
+  const fb = a.first_breach || {};
+  if (fb.already_below) box.append(el("div", "wnote", "You start below the safety buffer."));
+  else if (fb.date) box.append(el("div", "", `Most common first dip: ${fmtDate(fb.date)} (${pct(fb.share || 0)} of failing futures)`));
+  if (a.insufficient_failing) box.append(el("div", "wnote", "Too few failing futures to rank causes reliably."));
+  if ((a.causes || []).length) {
+    box.append(el("h4", "", "What drives the failing futures"));
+    a.causes.forEach((c) => {
+      const row = el("div", "bar"), track = el("div", "track"), fill = el("div", "fill");
+      fill.style.width = Math.min(100, Math.max(0, c.share_of_gap * 100)) + "%";
+      track.append(fill);
+      row.append(el("span", "bl", c.category.replace(/_/g, " ")), track, el("span", "bv", pct(c.share_of_gap)));
+      row.title = `${money(c.excess_per_path)} more spend per failing path (${money(c.failing_mean)} vs ${money(c.other_mean)})`;
+      box.append(row);
+    });
+  }
+  if ((a.bills || []).length) {
+    box.append(el("h4", "", "Outflows before the first dip"));
+    a.bills.forEach((b) => {
+      const planned = /^planned:/i.test(b.merchant);
+      const r = el("div", "bill");
+      r.append(el("span", "", fmtDate(b.date)), el("span", "", b.merchant.replace(/^planned:\s*/i, "")),
+               el("span", "", money(Math.abs(b.amount))));
+      if (planned) r.insertBefore(el("span", "tag", "planned"), r.children[1]);
+      box.append(r);
+    });
+  }
+}
+function renderUmbrellas(d) {
+  const box = $("#wUmbrellas"); box.replaceChildren();
+  box.append(el("p", "", d.umbrella_text));
+  (d.umbrellas || []).forEach((u) => {
+    const c = el("div", "card");
+    const total = u.cumulative_cut_pct != null ? u.cumulative_cut_pct : u.cut_pct;
+    c.append(el("b", "", `Cut ${u.category.replace(/_/g, " ")} by ${Math.round(total)}%`),
+             el("div", "", `Risk ${pct(u.p_any_breach_before)} → ${pct(u.p_any_breach_after)} (−${Math.round(u.risk_reduction * 100)} pts), costs about ${money(u.monthly_sacrifice)}/month`));
+    [["before", u.p_any_breach_before], ["after", u.p_any_breach_after]].forEach(([k, v]) => {
+      const row = el("div", "bar"), track = el("div", "track"), fill = el("div", "fill " + k);
+      fill.style.width = Math.min(100, v * 100) + "%"; track.append(fill);
+      row.append(el("span", "bl", k), track, el("span", "bv", pct(v))); c.append(row);
+    });
+    const btn = el("button", "act", "Apply to the map"); btn.type = "button";
+    btn.onclick = () => { W.cuts[u.category] = total / 100; weatherQuery().catch(fail); };
+    c.append(btn); box.append(c);
+  });
+  const ap = $("#wApplied"); ap.replaceChildren();
+  const cats = Object.keys(W.cuts);
+  if (cats.length) {
+    ap.append(el("small", "", "Applied cuts: "));
+    cats.forEach((k) => {
+      const t = el("button", "tag rm", `${k.replace(/_/g, " ")} −${Math.round(W.cuts[k] * 100)}% ✕`);
+      t.type = "button"; t.title = "Remove this cut"; t.setAttribute("aria-label", "Remove cut " + k);
+      t.onclick = () => { delete W.cuts[k]; weatherQuery().catch(fail); };
+      ap.append(t);
+    });
+    const clr = el("button", "act", "Clear cuts"); clr.type = "button";
+    clr.onclick = () => { W.cuts = {}; weatherQuery().catch(fail); };
+    ap.append(clr);
+  }
+}
+function weatherInit() {
+  SCENARIOS.forEach(([id, label]) => {
+    const b = el("button", "chipbtn", label); b.type = "button"; b.dataset.s = id; b.setAttribute("aria-pressed", String(id === W.scenario));
+    b.onclick = () => { W.scenario = id; $("#wAmount").value = ""; weatherQuery().catch(fail); };
+    $("#wScen").append(b);
+  });
+  $("#wAmount").disabled = true;
+  $("#wAmount").onchange = () => weatherQuery().catch(fail);
+  const sl = $("#wLife");
+  sl.oninput = () => {
+    W.lifestyle = +sl.value / 100;
+    $("#wLifeLbl").textContent = `Lifestyle spending ${sl.value}%`;
+    clearTimeout(W.timer);
+    W.timer = setTimeout(() => weatherQuery().catch(fail), 300);
+  };
+  $("#wReset").onclick = () => {
+    W.scenario = "none"; W.lifestyle = 1.0; W.cuts = {}; W.hl = null;
+    sl.value = 100; $("#wLifeLbl").textContent = "Lifestyle spending 100%"; $("#wAmount").value = "";
+    weatherQuery().catch(fail);
+  };
+  $("#wRefresh").onclick = () => weatherQuery().catch(fail);
 }
 
 function begin(p) { profile = p.profile; follow(p.run_id, () => { history.replaceState(null, "", `?profile=${encodeURIComponent(p.profile)}`); refresh(); }); }
 
 async function init() {
-  TABS.forEach(([id, label]) => { const b = el("button", "", label); b.dataset.t = id; b.onclick = () => show(id); $("#nav").append(b); });
+  weatherInit();
+  TABS.forEach(([id, label]) => { const b = el("button", "", label); b.dataset.t = id; b.onclick = () => { show(id); if (id === "weather") weatherEnter(); }; $("#nav").append(b); });
   show("dashboard");
   (await api("/api/personas")).forEach((p) => $("#persona").append(new Option(p, p)));
   $("#loadBtn").onclick = () => api(`/api/load/${$("#persona").value}`, {}).then(begin).catch(fail);

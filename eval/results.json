@@ -478,8 +478,451 @@
     "The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this is a design choice.",
     "The LLM-only advice is audited with no engine evidence, so any derived number in its text that is not in its claims counts as ungrounded; this inflates the gap relative to the hybrid, whose recommendations carry engine evidence.",
     "The LLM-only forecast uses the same 3 monthly origins per persona as the model (monthly net-flow history before the origin -> that month's net flow). A net-flow APE of 1.0 equals the flat-balance forecast.",
-    "The ablation is a single run at temperature 0 over 3 synthetic personas (only when run with an LLM); differences are indicative, not statistically tested."
+    "The ablation is a single run at temperature 0 over 3 synthetic personas (only when run with an LLM); differences are indicative, not statistically tested.",
+    "Out-of-distribution check: a second generator (eval/generate_messy.py) with different merchants, noisy UPI/NEFT/IMPS/card description formats, refunds, cash, EMIs, an annual subscription, a price increase and a travel spike was scored with the engines and thresholds unchanged. The same author wrote both generators and knows the engines, so this is a robustness check, not independent validation; it is not evidence about real bank data.",
+    "OOD behaviour: rules-only categorization accuracy fell from 0.8578 to 0.3327 (coverage 0.4201); detection and forecast were scored on oracle categories, so the categorizer drop does not feed into them. The oracle-category scoring flatters the OOD detection and forecast numbers.",
+    "OOD refunds are positive credits whose truth category is shopping; the rules label every positive amount as income, so refunds are always miscategorized by the rules-only categorizer. Cash withdrawals and EMIs have truth category 'other', which the rules never emit (they return uncategorized).",
+    "OOD payday_trigger has no planted target (truth set empty), so precision 0.0 (0.0\u20130.0) means any finding is a false positive. OOD subscription truth is the monthly subscriptions only; the annual one is not expected.",
+    "OOD generator provenance: spend level and opening balances were set so balances stay plausible, and the share of mainstream merchants the rules know (Swiggy, Zomato, Uber, Amazon, BigBasket) was raised once after the first draft scored rules-only accuracy below the 0.3 sanity floor. Only categorization accuracy was looked at when doing so. After a first scoring run two truth-labelling bugs in the generator were fixed because they scored correct detections as misses (subscription truth now uses the engine's normalised merchant strings; a same-day duplicate pair whose 'second row' was ambiguous now sits on consecutive days). No engine, threshold or planted target was changed to move a result."
   ],
+  "ood": {
+    "personas": [
+      "kavya",
+      "rohan",
+      "isha"
+    ],
+    "categorization": {
+      "rules_only": {
+        "accuracy": {
+          "mean": 0.3327,
+          "min": 0.3015,
+          "max": 0.3653,
+          "values": [
+            0.3313,
+            0.3015,
+            0.3653
+          ]
+        },
+        "macro_f1": {
+          "mean": 0.3564,
+          "min": 0.3169,
+          "max": 0.4175,
+          "values": [
+            0.3349,
+            0.3169,
+            0.4175
+          ]
+        },
+        "coverage": {
+          "mean": 0.4201,
+          "min": 0.4027,
+          "max": 0.4337,
+          "values": [
+            0.4337,
+            0.4027,
+            0.4238
+          ]
+        }
+      }
+    },
+    "detection": {
+      "large_charge": {
+        "precision": {
+          "mean": 0.1609,
+          "min": 0.1176,
+          "max": 0.2222,
+          "values": [
+            0.1429,
+            0.1176,
+            0.2222
+          ]
+        },
+        "recall": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "f1": {
+          "mean": 0.2747,
+          "min": 0.2105,
+          "max": 0.3636,
+          "values": [
+            0.25,
+            0.2105,
+            0.3636
+          ]
+        }
+      },
+      "duplicate": {
+        "precision": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "recall": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "f1": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "category_spike": {
+        "precision": {
+          "mean": 0.3333,
+          "min": 0.3333,
+          "max": 0.3333,
+          "values": [
+            0.3333,
+            0.3333,
+            0.3333
+          ]
+        },
+        "recall": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "f1": {
+          "mean": 0.5,
+          "min": 0.5,
+          "max": 0.5,
+          "values": [
+            0.5,
+            0.5,
+            0.5
+          ]
+        }
+      },
+      "subscriptions": {
+        "precision": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "recall": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "f1": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "unused_subscriptions": {
+        "precision": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "recall": {
+          "mean": 0.3333,
+          "min": 0.0,
+          "max": 1.0,
+          "values": [
+            0.0,
+            1.0,
+            0.0
+          ]
+        },
+        "f1": {
+          "mean": 0.3333,
+          "min": 0.0,
+          "max": 1.0,
+          "values": [
+            0.0,
+            1.0,
+            0.0
+          ]
+        }
+      },
+      "payday_trigger": {
+        "precision": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "values": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "recall": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "f1": {
+          "mean": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "values": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      }
+    },
+    "forecast": {
+      "model": {
+        "net_flow_ape": {
+          "mean": 12.0335,
+          "min": 5.2162,
+          "max": 22.594,
+          "values": [
+            22.594,
+            5.2162,
+            8.2903
+          ]
+        },
+        "balance_mape": {
+          "mean": 0.2457,
+          "min": 0.1954,
+          "max": 0.328,
+          "values": [
+            0.328,
+            0.1954,
+            0.2138
+          ]
+        },
+        "mae_vs_monthly_spend": {
+          "mean": 0.1848,
+          "min": 0.0931,
+          "max": 0.2978,
+          "values": [
+            0.2978,
+            0.0931,
+            0.1634
+          ]
+        },
+        "pinball_vs_monthly_spend": {
+          "mean": 0.0565,
+          "min": 0.0468,
+          "max": 0.0615,
+          "values": [
+            0.0615,
+            0.0612,
+            0.0468
+          ]
+        },
+        "band_coverage": {
+          "mean": 0.7468,
+          "min": 0.6086,
+          "max": 0.8491,
+          "values": [
+            0.6086,
+            0.7828,
+            0.8491
+          ]
+        }
+      },
+      "flat_balance": {
+        "net_flow_ape": {
+          "mean": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "values": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        "balance_mape": {
+          "mean": 0.9679,
+          "min": 0.743,
+          "max": 1.1049,
+          "values": [
+            1.1049,
+            0.743,
+            1.0558
+          ]
+        },
+        "mae_vs_monthly_spend": {
+          "mean": 0.0885,
+          "min": 0.0392,
+          "max": 0.1443,
+          "values": [
+            0.1443,
+            0.0392,
+            0.0819
+          ]
+        },
+        "pinball_vs_monthly_spend": {
+          "mean": 0.2432,
+          "min": 0.2378,
+          "max": 0.2533,
+          "values": [
+            0.2533,
+            0.2384,
+            0.2378
+          ]
+        },
+        "band_coverage": null
+      },
+      "seasonal_naive": {
+        "net_flow_ape": {
+          "mean": 37.7765,
+          "min": 17.7915,
+          "max": 72.8655,
+          "values": [
+            22.6724,
+            72.8655,
+            17.7915
+          ]
+        },
+        "balance_mape": {
+          "mean": 0.5423,
+          "min": 0.4272,
+          "max": 0.7199,
+          "values": [
+            0.7199,
+            0.4272,
+            0.4798
+          ]
+        },
+        "mae_vs_monthly_spend": {
+          "mean": 0.4533,
+          "min": 0.2882,
+          "max": 0.5654,
+          "values": [
+            0.5654,
+            0.5063,
+            0.2882
+          ]
+        },
+        "pinball_vs_monthly_spend": {
+          "mean": 0.164,
+          "min": 0.1345,
+          "max": 0.1909,
+          "values": [
+            0.1909,
+            0.1666,
+            0.1345
+          ]
+        },
+        "band_coverage": null
+      },
+      "trailing_mean": {
+        "net_flow_ape": {
+          "mean": 16.0062,
+          "min": 6.748,
+          "max": 22.7793,
+          "values": [
+            22.7793,
+            6.748,
+            18.4913
+          ]
+        },
+        "balance_mape": {
+          "mean": 0.8749,
+          "min": 0.6958,
+          "max": 0.9688,
+          "values": [
+            0.96,
+            0.6958,
+            0.9688
+          ]
+        },
+        "mae_vs_monthly_spend": {
+          "mean": 0.3799,
+          "min": 0.2338,
+          "max": 0.588,
+          "values": [
+            0.588,
+            0.2338,
+            0.318
+          ]
+        },
+        "pinball_vs_monthly_spend": {
+          "mean": 0.2283,
+          "min": 0.2242,
+          "max": 0.2306,
+          "values": [
+            0.2306,
+            0.2302,
+            0.2242
+          ]
+        },
+        "band_coverage": null
+      }
+    },
+    "forecast_meta": {
+      "n_personas": 3,
+      "n_origins_per_persona": 3,
+      "total_months": 9
+    },
+    "planted": {
+      "duplicates": 2,
+      "large_charges": 2,
+      "spike": 1,
+      "unused_subs": [
+        2,
+        1,
+        2
+      ],
+      "refunds": [
+        16,
+        19,
+        10
+      ]
+    }
+  },
   "grounding": null,
   "backtest": {
     "priya": {

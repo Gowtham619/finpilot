@@ -41,6 +41,29 @@ Event: balance falls >10% below its starting level within 30 days. n=102 (overla
 | 0.6-0.8 | 7 | 0.7174 | 1.0 |
 | 0.8-1.0 | 58 | 0.9741 | 0.9655 |
 
+## Out-of-distribution check (second generator, engines unchanged)
+Personas: kavya, rohan, isha. Same author wrote both generators: a robustness check, not independent validation. Planted per persona: 2 duplicates, 2 large charges, 1 category spike (travel), unused subscriptions [2, 1, 2], refunds [16, 19, 10]. Cells show mean (min–max) across personas.
+
+| Categorization (rules-only) | Accuracy | Macro-F1 | Coverage |
+|---|---|---|---|
+| rules_only | 0.3327 (0.3015–0.3653) | 0.3564 (0.3169–0.4175) | 0.4201 (0.4027–0.4337) |
+
+| Detection | Precision | Recall |
+|---|---|---|
+| large_charge | 0.1609 (0.1176–0.2222) | 1.0 (1.0–1.0) |
+| duplicate | 1.0 (1.0–1.0) | 1.0 (1.0–1.0) |
+| category_spike | 0.3333 (0.3333–0.3333) | 1.0 (1.0–1.0) |
+| subscriptions | 1.0 (1.0–1.0) | 1.0 (1.0–1.0) |
+| unused_subscriptions | 1.0 (1.0–1.0) | 0.3333 (0.0–1.0) |
+| payday_trigger | 0.0 (0.0–0.0) | 1.0 (1.0–1.0) |
+
+| Forecast (3 personas x 3 origins = 9 months) | Balance MAPE | Month-end MAE / monthly spend | Pinball / monthly spend | p10-p90 coverage (nominal 0.80) |
+|---|---|---|---|---|
+| model | 0.2457 (0.1954–0.328) | 0.1848 (0.0931–0.2978) | 0.0565 (0.0468–0.0615) | 0.7468 (0.6086–0.8491) |
+| flat_balance | 0.9679 (0.743–1.1049) | 0.0885 (0.0392–0.1443) | 0.2432 (0.2378–0.2533) | - |
+| seasonal_naive | 0.5423 (0.4272–0.7199) | 0.4533 (0.2882–0.5654) | 0.164 (0.1345–0.1909) | - |
+| trailing_mean | 0.8749 (0.6958–0.9688) | 0.3799 (0.2338–0.588) | 0.2283 (0.2242–0.2306) | - |
+
 ## Ablation: LLM-only vs rules-only vs hybrid
 n/a (--no-llm)
 
@@ -76,3 +99,8 @@ n/a (--no-llm)
 - The LLM-only advice is audited with no engine evidence, so any derived number in its text that is not in its claims counts as ungrounded; this inflates the gap relative to the hybrid, whose recommendations carry engine evidence.
 - The LLM-only forecast uses the same 3 monthly origins per persona as the model (monthly net-flow history before the origin -> that month's net flow). A net-flow APE of 1.0 equals the flat-balance forecast.
 - The ablation is a single run at temperature 0 over 3 synthetic personas (only when run with an LLM); differences are indicative, not statistically tested.
+- Out-of-distribution check: a second generator (eval/generate_messy.py) with different merchants, noisy UPI/NEFT/IMPS/card description formats, refunds, cash, EMIs, an annual subscription, a price increase and a travel spike was scored with the engines and thresholds unchanged. The same author wrote both generators and knows the engines, so this is a robustness check, not independent validation; it is not evidence about real bank data.
+- OOD behaviour: rules-only categorization accuracy fell from 0.8578 to 0.3327 (coverage 0.4201); detection and forecast were scored on oracle categories, so the categorizer drop does not feed into them. The oracle-category scoring flatters the OOD detection and forecast numbers.
+- OOD refunds are positive credits whose truth category is shopping; the rules label every positive amount as income, so refunds are always miscategorized by the rules-only categorizer. Cash withdrawals and EMIs have truth category 'other', which the rules never emit (they return uncategorized).
+- OOD payday_trigger has no planted target (truth set empty), so precision 0.0 (0.0–0.0) means any finding is a false positive. OOD subscription truth is the monthly subscriptions only; the annual one is not expected.
+- OOD generator provenance: spend level and opening balances were set so balances stay plausible, and the share of mainstream merchants the rules know (Swiggy, Zomato, Uber, Amazon, BigBasket) was raised once after the first draft scored rules-only accuracy below the 0.3 sanity floor. Only categorization accuracy was looked at when doing so. After a first scoring run two truth-labelling bugs in the generator were fixed because they scored correct detections as misses (subscription truth now uses the engine's normalised merchant strings; a same-day duplicate pair whose 'second row' was ambiguous now sits on consecutive days). No engine, threshold or planted target was changed to move a result.

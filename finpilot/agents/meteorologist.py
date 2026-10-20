@@ -42,8 +42,17 @@ def check_scenario(s):
     return s
 
 
-def scenario_flows(model, scenario, amount=None, horizon=60):
-    """Extra (date, amount, label) flows for a stress scenario; pure function of the model."""
+def default_amount(scenario, balance):
+    """purchase: 95% of the balance, emergency: 70%, rounded to the nearest 1,000; 10,000 if balance <= 0."""
+    if balance is None or not math.isfinite(float(balance)) or balance <= 0:
+        return 10000.0
+    frac = 0.95 if scenario == "purchase" else 0.70
+    return float(max(1000, round(frac * float(balance) / 1000.0) * 1000))
+
+
+def scenario_flows(model, scenario, amount=None, horizon=60, balance=None):
+    """Extra (date, amount, label) flows for a stress scenario; pure function of the model (and balance
+    for the default amounts)."""
     scenario = check_scenario(scenario)
     if scenario == "none":
         return []
@@ -53,11 +62,9 @@ def scenario_flows(model, scenario, amount=None, horizon=60):
         if not pos:
             return []
         r = max(pos, key=lambda r: (r["amount"], r["merchant"]))
-        for d in dates:
-            if d.day == min(r["day"], d.days_in_month):
-                return [(str(d.date()), -float(r["amount"]), "salary skipped")]
-        return []
-    amt = DEFAULT_AMOUNT[scenario] if amount is None else check_amount(amount)
+        return [(str(d.date()), -float(r["amount"]), "salary skipped") for d in dates
+                if d.day == min(r["day"], d.days_in_month)]
+    amt = default_amount(scenario, balance) if amount is None else check_amount(amount)
     day = 10 if scenario == "purchase" else 15
     label = "planned purchase" if scenario == "purchase" else "emergency expense"
     return [(str(dates[min(day, len(dates)) - 1].date()), -amt, label)]
@@ -128,14 +135,17 @@ def run(model, balance, params, llm=None):
     params = dict(params or {})
     scenario = check_scenario(params.get("scenario"))
     horizon = params.get("horizon", 60)
-    flows = scenario_flows(model, scenario, params.get("amount"), horizon)
+    flows = scenario_flows(model, scenario, params.get("amount"), horizon, balance)
     rep = W.report(model, balance, horizon=horizon, buffer=params.get("buffer"),
                    lifestyle=params.get("lifestyle", 1.0), cuts=params.get("cuts"), extra_flows=flows)
     rep["scenario"] = scenario
     rep["scenario_flows"] = [{"date": d, "amount": round(float(a), 2), "label": lab} for d, a, lab in flows]
-    if scenario != "none" and not flows:
-        rep["scenario_note"] = ("no recurring income found, so there is no salary to skip"
-                                if scenario == "salary_skip" else "scenario produced no flow")
+    rep["scenario_amount"] = (abs(flows[0][1]) if flows and scenario in ("purchase", "emergency") else None)
+    if scenario == "salary_skip":
+        rep["scenario_note"] = (f"{len(flows)} pay date(s) removed inside the horizon" if flows else
+                                "no recurring income found, so there is no salary to skip")
+    elif scenario != "none" and not flows:
+        rep["scenario_note"] = "scenario produced no flow"
     texts = fallback_texts(rep)
     out = narrate(llm, SYSTEM, _evidence(rep), None)
     if isinstance(out, dict):

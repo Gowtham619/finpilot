@@ -59,23 +59,30 @@ def test_lifestyle_monotone_on_purchase(client):
 
 
 def test_scenarios_on_priya(client):
-    base = get(client).json()
     j = get(client, scenario="salary_skip").json()
-    # priya holds ~98k and the skipped salary is 62k: the balance falls by exactly that amount but never
-    # reaches the ~13k buffer, so the honest weather is still clear (no storm is manufactured).
-    assert j["calendar"][-1]["p50"] == pytest.approx(base["calendar"][-1]["p50"] - 62000, abs=1)
-    assert j["headline"]["p_any_breach"] == 0
-    # a big enough shock does create rain/storm
-    big = get(client, scenario="purchase", amount=100000).json()
-    assert {c["label"] for c in big["calendar"]} & {"rain", "storm"} and big["storms"]
-    assert len(j["scenario_flows"]) == 1 and j["scenario_flows"][0]["label"] == "salary skipped"
-    assert j["scenario_flows"][0]["amount"] < 0
-    for sc, day, lab in (("purchase", 10, "planned purchase"), ("emergency", 15, "emergency expense")):
+    assert {c["label"] for c in j["calendar"]} & {"rain", "storm"}
+    assert len(j["scenario_flows"]) == 2 and all(f["label"] == "salary skipped" and f["amount"] == -62000
+                                                  for f in j["scenario_flows"])
+    assert "2 pay date" in j["scenario_note"] and j["scenario_amount"] is None
+    for sc, day, lab, frac in (("purchase", 10, "planned purchase", 0.95), ("emergency", 15, "emergency expense", 0.7)):
         j = get(client, scenario=sc).json()
         f = j["scenario_flows"][0]
         assert f["label"] == lab and f["date"] == j["calendar"][day - 1]["date"]
-        assert f["amount"] == -(80000 if sc == "purchase" else 40000)
-    assert get(client, scenario="purchase", amount=1234).json()["scenario_flows"][0]["amount"] == -1234
+        assert f["amount"] == -j["scenario_amount"] and j["scenario_amount"] % 1000 == 0
+        assert j["scenario_amount"] == round(frac * 98464.97 / 1000) * 1000
+    assert get(client, scenario="purchase", amount=1234).json()["scenario_amount"] == 1234
+    assert get(client).json()["scenario_amount"] is None
+
+
+def test_default_amount_and_multi_salary(priya):
+    import dataclasses
+    assert M.default_amount("purchase", 0) == 10000 and M.default_amount("emergency", -5) == 10000
+    assert M.default_amount("purchase", 98464.97) == 94000 and M.default_amount("emergency", 98464.97) == 69000
+    model, bal = priya
+    m = dataclasses.replace(model, recurring=[r for r in model.recurring if r["amount"] > 0])
+    f = M.scenario_flows(m, "salary_skip", None, 90)
+    assert len(f) == 3 and len({x[0] for x in f}) == 3 and all(x[1] == -62000 for x in f)
+    assert "3 pay date" in M.run(m, bal, {"scenario": "salary_skip", "horizon": 90})["scenario_note"]
 
 
 @pytest.mark.parametrize("q", [
@@ -122,13 +129,10 @@ def test_scenario_flows_salary_skip(priya):
     model, _ = priya
     f = M.scenario_flows(model, "salary_skip", None, 60)
     sal = max((r for r in model.recurring if r["amount"] > 0), key=lambda r: r["amount"])
-    assert len(f) == 1 and f[0][1] == -sal["amount"] and f[0][2] == "salary skipped"
-    d = pd.Timestamp(f[0][0])
-    assert d.day == min(sal["day"], d.days_in_month) and d > model.last_date
-    assert d <= model.last_date + pd.Timedelta(days=60)
-    # first occurrence only
-    assert not any(pd.Timestamp(f[0][0]) > x.normalize() and x.day == min(sal["day"], x.days_in_month)
-                   for x in pd.date_range(model.last_date + pd.Timedelta(days=1), d))
+    assert f and all(x[1] == -sal["amount"] and x[2] == "salary skipped" for x in f)
+    for x in f:
+        d = pd.Timestamp(x[0])
+        assert d.day == min(sal["day"], d.days_in_month) and model.last_date < d <= model.last_date + pd.Timedelta(days=60)
 
 
 def test_scenario_flows_no_income_and_note(priya):

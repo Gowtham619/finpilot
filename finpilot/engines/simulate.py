@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 
 from .forecast import monte_carlo
@@ -98,6 +100,12 @@ def _bands(res):
             "p90": [round(float(x), 2) for x in res.p90]}
 
 
+def _pct(p):
+    """Like the UI's pct(): a tiny non-zero probability reads '<1%', never '0%' (half rounds up)."""
+    r = int(math.floor(float(p) * 100 + 0.5))
+    return "<1%" if p > 0 and r == 0 else f"{r}%"
+
+
 def _bal(x):
     """Unsigned wording (the grounding check compares unsigned figures)."""
     return f"₹{x:,.0f}" if x >= 0 else f"overdrawn by ₹{-x:,.0f}"
@@ -120,14 +128,14 @@ def duel(model, balance, a, b, horizon=90, n=1000, seed=0):
                 winner, basis = ("a" if sa[key] > sb[key] else "b"), label
                 break
     if winner == "tie":
-        reason = (f"Tie: both options have overdraft risk {sa['p_overdraft']*100:.0f}%, median balance in "
+        reason = (f"Tie: both options have overdraft risk {_pct(sa['p_overdraft'])}, median balance in "
                   f"{horizon} days {_bal(sa['end_p50'])}, median lowest balance {_bal(sa['floor_p50'])} and "
                   f"average median balance {_bal(sa['avg_p50'])}.")
     else:
         w, l = (sa, sb) if winner == "a" else (sb, sa)
         wn = a["name"] if winner == "a" else b["name"]
-        reason = (f"{wn} wins on {basis}: overdraft risk {w['p_overdraft']*100:.0f}% vs "
-                  f"{l['p_overdraft']*100:.0f}%, median balance in {horizon} days "
+        reason = (f"{wn} wins on {basis}: overdraft risk {_pct(w['p_overdraft'])} vs "
+                  f"{_pct(l['p_overdraft'])}, median balance in {horizon} days "
                   f"{_bal(w['end_p50'])} vs {_bal(l['end_p50'])}")
         if basis in ("lowest balance", "average balance"):
             reason += f", median lowest balance {_bal(w['floor_p50'])} vs {_bal(l['floor_p50'])}"

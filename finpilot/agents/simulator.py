@@ -3,7 +3,8 @@ import re
 import pandas as pd
 
 from ..engines import simulate as S
-from .common import fmt_bal, grounded_or, inr, narrate
+from .common import (fmt_bal, grounded_or, inr, narrate, pct_text, pct_values, risk_claim_consistent,
+                     risk_level)
 
 SYSTEM = ("You answer 'can I afford this?'. Use only the numbers given, in two or three sentences. "
           "Return JSON {\"narrative\": str}.")
@@ -43,6 +44,26 @@ def better_date(best, chosen):
     return None
 
 
+def _side_numbers(sm):
+    """Strict evidence for one simulated summary: unsigned money amounts and explicit percents."""
+    return {"money": [abs(sm[k]) for k in ("end_p10", "end_p50", "end_p90", "floor_p50", "avg_p50") if k in sm],
+            "p_overdraft_pct": pct_values(sm["p_overdraft"])}
+
+
+def afford_strict_evidence(sim, best, fix, amount, financed_months=0):
+    """Only the numbers an affordability narration may state (no counts or flags that could ground a
+    stray percent)."""
+    ev = {"amount": abs(float(amount)), "horizon": sim["horizon"], "financed_months": financed_months,
+          "baseline": _side_numbers(sim["baseline"]), "with_purchase": _side_numbers(sim["with_purchase"]),
+          "best": [_side_numbers(b) for b in best or []], "target_pct": pct_values(SAFE_P)}
+    if financed_months:
+        ev["installment"] = abs(float(amount)) / financed_months
+    if fix:
+        ev["fix"] = {"p_overdraft_pct": pct_values(fix["p_overdraft"]), "cut_pct": fix["cut_pct"],
+                     "monthly_saving": fix["est_monthly_saving"]}
+    return ev
+
+
 def afford(model, balance, req, llm=None):
     """Raises ValueError if req["date"] is outside the forecast window; the API layer maps it to HTTP 400."""
     fm = int(req.get("financed_months") or 0)
@@ -59,18 +80,18 @@ def afford(model, balance, req, llm=None):
     text = (f"Buying {inr(req['amount'])} on {sim['date']}"
             + (f" over {fm} monthly installments" if fm else "")
             + f" moves your overdraft risk over the next {hz} days from "
-            f"{b['p_overdraft']*100:.0f}% to {a['p_overdraft']*100:.0f}% "
-            f"(median balance in {hz} days {fmt_bal(a['end_p50'])}). Verdict: {verdict}.")
+            f"{pct_text(b['p_overdraft'])} to {pct_text(a['p_overdraft'])}; in {hz} days the median balance "
+            f"is {fmt_bal(a['end_p50'])}. Verdict: {verdict}.")
     alt = better_date(best, {"date": sim["date"], **a, "ignored_flows": sim.get("ignored_flows", 0)})
     if alt is not None:
         if alt["p_overdraft"] < a["p_overdraft"]:
-            text += (f" Lower-risk date tested: {alt['date']} ({alt['p_overdraft']*100:.0f}% risk vs "
-                     f"{a['p_overdraft']*100:.0f}%).")
+            text += (f" Lower-risk date tested: {alt['date']} ({pct_text(alt['p_overdraft'])} risk vs "
+                     f"{pct_text(a['p_overdraft'])}).")
         else:
             text += (f" Better date tested: {alt['date']} (same risk, median lowest balance "
                      f"{fmt_bal(alt['floor_p50'])} vs {fmt_bal(a['floor_p50'])}).")
     if fix and fix["cut_pct"]:
-        text += (f" To bring overdraft risk down to about {fix['p_overdraft']*100:.0f}%, cut "
+        text += (f" To bring overdraft risk down to about {pct_text(fix['p_overdraft'])}, cut "
                  f"{fix['category'].replace('_', ' ')} by {fix['cut_pct']}% "
                  f"(about {inr(fix['est_monthly_saving'])}/month).")
     elif fix is None and a["p_overdraft"] > SAFE_P:
@@ -81,7 +102,9 @@ def afford(model, balance, req, llm=None):
     llm_text = out.get("narrative") if isinstance(out, dict) else None
     if not verdict_consistent(llm_text, verdict):
         llm_text = None  # e.g. "completely safe" when the computed verdict is unsafe
-    narrative = grounded_or(llm_text, evidence, text)
+    if not risk_claim_consistent(llm_text, risk_level(a["p_overdraft"]), [a["p_overdraft"]]):
+        llm_text = None  # e.g. "go ahead, this will not hurt you" when the computed risk is real
+    narrative = grounded_or(llm_text, afford_strict_evidence(sim, best, fix, req["amount"], fm), text, strict=True)
     res = {"verdict": verdict, "sim": sim, "best_dates": best, "fix": fix, "narrative": narrative}
     n_ign = int(sim.get("ignored_flows") or 0)
     if n_ign > 0:  # deterministic, added after grounding so it cannot fail it
@@ -91,11 +114,34 @@ def afford(model, balance, req, llm=None):
 
 
 def duel_evidence(res):
-    """Numbers a duel narrative may state; negative balances are worded 'overdrawn by ₹X'."""
-    sides = [res["a"]["summary"], res["b"]["summary"]]
-    over = [-v for sd in sides for k, v in sd.items()
-            if k != "p_overdraft" and isinstance(v, (int, float)) and v < 0]
-    return {"a": sides[0], "b": sides[1], "h": res["horizon"], "overdrawn_by": over}
+    """Numbers a duel narration may state (strict): unsigned money amounts per side, explicit percents and the
+    horizon. Negative balances are worded 'overdrawn by ₹X', so their absolute values are listed."""
+    return {"a": _side_numbers(res["a"]["summary"]), "b": _side_numbers(res["b"]["summary"]),
+            "horizon": res["horizon"]}
+
+
+_WIN_WORDS = r"(?:wins?|winner|winning|better|safer|best|preferable|smarter|wiser|stronger|comes out ahead|is ahead)"
+
+
+def duel_text_consistent(text, res):
+    """The narration must agree with the computed winner: it names the winner's option, never pairs the
+    loser's name with win/better/safer/best wording, and in a tie declares no winner."""
+    if not isinstance(text, str):
+        return False
+    low = text.lower()
+    na, nb = res["a"]["name"].strip().lower(), res["b"]["name"].strip().lower()
+    if res["winner"] == "tie":
+        return not re.search(r"\b" + _WIN_WORDS + r"\b|\bprefer\w*|\bbeats?\b|\boutperform\w*", low)
+    win, lose = (na, nb) if res["winner"] == "a" else (nb, na)
+    if not win or win not in low:
+        return False
+    if lose and lose not in win:
+        L = re.escape(lose)
+        if re.search(L + r"\W+(?:\w+\W+){0,3}?" + _WIN_WORDS + r"\b", low):
+            return False
+        if re.search(r"\b(?:winner|choose|pick|prefer|go with|recommend\w*|opt for)\W+(?:\w+\W+){0,1}?" + L, low):
+            return False
+    return True
 
 
 def run_duel(model, balance, req, llm=None):
@@ -107,8 +153,12 @@ def run_duel(model, balance, req, llm=None):
     res = S.duel(model, balance, opt(req["a"]), opt(req["b"]), horizon=int(req.get("horizon", 90)))
     out = narrate(llm, SYSTEM, {"duel": {k: res[k] for k in ("winner", "reason")},
                                 "a": res["a"]["summary"], "b": res["b"]["summary"]}, None)
-    res["narrative"] = grounded_or(out.get("narrative") if isinstance(out, dict) else None,
-                                   duel_evidence(res), res["reason"])
+    text = out.get("narrative") if isinstance(out, dict) else None
+    ps = [res["a"]["summary"]["p_overdraft"], res["b"]["summary"]["p_overdraft"]]
+    if not duel_text_consistent(text, res) or not risk_claim_consistent(text, risk_level(max(ps)), ps):
+        text = None  # e.g. "Buy now wins clearly" when the computed winner is the other option
+    res["narrative"] = grounded_or(text, duel_evidence(res), res["reason"], strict=True,
+                                   ignore=(res["a"]["name"], res["b"]["name"]))
     if res.get("ignored_flows"):
         res["notice"] = (f"{res['ignored_flows']} installment(s) fall outside the "
                          f"{res['horizon']}-day window and are not simulated.")

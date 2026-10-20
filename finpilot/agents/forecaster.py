@@ -1,10 +1,17 @@
 import pandas as pd
 
 from ..engines.forecast import current_balance, fit, goal_status, monte_carlo
-from .common import fmt_bal, grounded_or, inr, narrate
+from .common import fmt_bal, grounded_or, narrate, pct_text, pct_values, risk_claim_consistent, risk_level
 
 SYSTEM = ("Explain this cash-flow forecast in two plain sentences using only the numbers given. "
           "Return JSON {\"narrative\": str}.")
+
+
+def strict_evidence(s, horizon, bal):
+    """Only the numbers a forecast narration may state: money amounts (unsigned) and explicit percents."""
+    return {"horizon": horizon, "balance": abs(bal),
+            "money": [abs(s[k]) for k in ("end_p10", "end_p50", "end_p90", "floor_p50")],
+            "p_overdraft_pct": pct_values(s["p_overdraft"])}
 
 
 def run(df, opening, goals=(), llm=None, horizon=60):
@@ -33,9 +40,11 @@ def run(df, opening, goals=(), llm=None, horizon=60):
             gs.append({"name": name if isinstance(g, dict) else "?", "error": f"invalid goal: {e}"})
     fallback = (f"In {horizon} days your balance is projected at {fmt_bal(s['end_p50'])} "
                 f"(likely range {fmt_bal(s['end_p10'])} to {fmt_bal(s['end_p90'])}). "
-                f"Chance of going overdrawn: {s['p_overdraft']*100:.0f}%.")
+                f"Chance of going overdrawn: {pct_text(s['p_overdraft'])}.")
     out = narrate(llm, SYSTEM, {"summary": s, "horizon": horizon, "balance": bal}, None)
-    narrative = grounded_or(out.get("narrative") if isinstance(out, dict) else None,
-                            {"s": s, "h": horizon, "b": bal}, fallback)
+    text = out.get("narrative") if isinstance(out, dict) else None
+    if not risk_claim_consistent(text, risk_level(s["p_overdraft"]), [s["p_overdraft"]]):
+        text = None  # e.g. "zero chance of going overdrawn" while the computed risk is 2%
+    narrative = grounded_or(text, strict_evidence(s, horizon, bal), fallback, strict=True)
     return {"balance": round(bal, 2), "horizon": horizon, "summary": s, "bands": bands,
             "goals": gs, "narrative": narrative, "model": model}

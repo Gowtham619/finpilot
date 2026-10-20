@@ -229,7 +229,21 @@ def test_llm_prompt_is_numeric_report_only(priya):
     llm = FakeLLM(lambda s, u: {})
     M.run(model, bal, {"scenario": "purchase"}, llm)
     payload = json.loads(llm.calls[0][1])
-    assert set(payload) == {"buffer", "lifestyle", "horizon", "headline", "storms", "autopsy", "umbrellas"}
+    rep = M.run(model, bal, {"scenario": "purchase"})
+    assert set(payload) == set(M.strict_evidence(rep)) | {"worst_label", "scenario", "cause_categories",
+                                                          "umbrella_categories"}
+
+
+def test_llm_prompt_never_contains_merchant_names(priya):
+    model, bal = priya
+    for sc in ("none", "purchase", "salary_skip"):
+        llm = FakeLLM(lambda s, u: {})
+        rep = M.run(model, bal, {"scenario": sc}, llm)
+        merchants = {b["merchant"] for b in rep["autopsy"]["bills"]} | {r["merchant"] for r in model.recurring}
+        assert merchants
+        sent = llm.calls[0][1]
+        for m in merchants:
+            assert m not in sent, (sc, m)
 
 
 # ---- strict grounding, hygiene, label stems ------------------------------------------------

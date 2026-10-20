@@ -80,3 +80,13 @@ def test_labels_and_non_bill_wording():
 def test_makefile_prefers_venv_python():
     mk = (api.HERE.parent / "Makefile").read_text()
     assert "PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)" in mk
+
+
+def test_readme_screenshot_exists_and_is_referenced():
+    root = api.HERE.parent
+    img = root / "docs" / "img" / "money-weather-storm.png"
+    assert img.exists() and 10_000 < img.stat().st_size < 400_000
+    assert img.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    readme = (root / "README.md").read_text()
+    assert "](docs/img/money-weather-storm.png)" in readme
+    assert "re-computes the numbers in every recommendation" not in readme

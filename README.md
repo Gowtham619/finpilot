@@ -1,6 +1,10 @@
 # FinPilot
 
-**A financial copilot that shows you the weather, not just the balance.** Upload a bank statement (or load a synthetic persona) and a team of agents categorizes it, finds anomalies and wasteful subscriptions, simulates 1,000 possible futures, and turns them into a 60-day *Money Weather* map: which days are clear, which are stormy, which habits and bills drive the bad futures, and which cuts buy the most safety per rupee. A Verifier re-computes the numbers in every recommendation before you see them. Built for Agent Arena 2026, Track 02. All data is synthetic.
+**A financial copilot that shows you the weather, not just the balance.** Upload a bank statement (or load a synthetic persona) and a team of agents categorizes it, finds anomalies and wasteful subscriptions, simulates 1,000 possible futures, and turns them into a 60-day *Money Weather* map: which days are clear, which are stormy, which habits and bills drive the bad futures, and which cuts buy the most safety per rupee. A Verifier checks every number in a recommendation against recomputed values where it can, otherwise against the engine's own evidence, before you see it. Built for Agent Arena 2026, Track 02. All data is synthetic.
+
+![Money Weather for Priya with the Big purchase scenario and the first umbrella applied: a Storm ahead chip and a 60-day risk calendar turning red in late October](docs/img/money-weather-storm.png)
+
+*Priya (synthetic), Big purchase scenario (₹94,000 on Oct 10) with the first umbrella (food delivery -20%) applied: Storm ahead, 69% of simulated futures dip below the ₹13,212 safety buffer, worst day Oct 31 at 67%. Captured with headless Chrome from `?profile=priya&tab=weather&scenario=purchase&apply=1`, no LLM key.*
 
 **60-second tour.** Run `make run`, open http://127.0.0.1:8000 and press **Guided demo**: a self-playing, ~67 s tour that drives the real UI (not a video) through persona load, Money Weather, the Verifier evidence, "Can I afford it?", the Decision duel and the digest. Beat sheet: [`docs/DEMO.md`](docs/DEMO.md). Deployed demo: not deployed yet (see "Before you submit").
 
@@ -12,12 +16,13 @@ The same Monte Carlo engine that powers the forecast becomes a **60-day financia
 - **Storm windows.** A storm window is a maximal run of days at 25% or more, with its peak day and peak risk.
 - **Autopsy of the failing futures.** A "failing" future dips below the buffer on at least one day. The autopsy compares failing with non-failing futures over the window before the first breach and ranks which categories (and which bills landing before the breach) explain the gap. An evidence guard suppresses it when fewer than max(20, 2% of paths) fail, or when every path fails.
 - **Umbrellas.** Spending cuts (10/20/30% of one category) ranked by *measured* risk reduction per ₹1,000 of monthly sacrifice, on common random numbers so the difference is the cut, not noise. Essentials are never offered (`NON_ACTIONABLE = {uncategorized, other, health, rent, income, utilities}`). "Apply to the map" stacks the cut and re-runs the map.
-- **Stress scenarios.** Job-loss drill (every pay date in the horizon removed), Big purchase (default 95% of balance, on day 10), Medical emergency (default 70% of balance, on day 15), plus a live **lifestyle slider** (0-200% of discretionary spend, re-queried as you drag).
+- **Stress scenarios.** Job-loss drill (every pay date in the horizon removed), Big purchase (default 95% of balance, on day 10), Medical emergency (default 70% of balance, on day 15), plus a live **non-bill spending slider** (0-200% of non-bill spend: groceries, dining, shopping and other spending that is not a recurring bill; re-queried as you drag).
 
-Definitions: *safety buffer* = 7 days of average total spend (mean daily discretionary spend plus recurring bills / 30.4; user-overridable). Thresholds and the 25% storm rule are in `finpilot/engines/weather.py`.
+Definitions: *safety buffer* = 7 days of average total spend (mean daily non-bill spend plus recurring bills / 30.4; user-overridable). The calendar marks month starts, paydays (₹+), the scenario's purchase or emergency (₹−) and skipped salaries (₹✕). Thresholds and the 25% storm rule are in `finpilot/engines/weather.py`.
 
 Honest caveats:
-- **The default demo persona (Priya, balance ₹98,465) has clear skies** (0% chance of breaching the buffer), which is why the stress scenarios exist. Her *Big purchase* default (₹94,000) gives a storm at 77%; with the 20% food-delivery umbrella applied and the slider at 70%, about 5%. That is what the seeded persona shows, not a general result.
+- **The default demo persona (Priya, balance ₹98,465) has clear skies** (0% chance of breaching the buffer), which is why the stress scenarios exist. Her *Big purchase* default (₹94,000) gives a storm at 77%; with the 20% food-delivery umbrella applied, 69%, and with the slider at 70% as well, about 5%. That is what the seeded persona shows, not a general result.
+- **Not every drill is stormy.** Meera's job-loss drill stays clear (0%): her balance absorbs two missed paycheques. The Medical emergency default (70% of balance on day 15) is clear or near-clear for all three personas at 100% non-bill spending (Priya and Arjun under 1%, Meera 0%).
 - Storms reflect the **last 90 days of habits** (a weekday-matched bootstrap), not a causal model of your life. A salary change, new bill or windfall the model has not seen is invisible to it.
 - The autopsy is an **attribution over simulated paths**, not proof of cause.
 - The legend labels a *day* "Storm" at 35%+, while a storm *window* starts at 25%. Both are defined above.
@@ -46,7 +51,7 @@ Principle: **engines compute, LLMs narrate, the Verifier checks.** All arithmeti
 | Verifier | audit | `engines/verify.py` | optional rewrite of corrected text |
 | Chat | Q&A | read-only query tools | picks a tool, phrases the answer |
 
-Also: CSV upload (`date, description, amount` + opening balance + profile name), three personas (priya, arjun, meera), a **Why?** panel per recommendation (finding ids, evidence, verifier note), goals, "Can I afford it?" (optionally financed; suggests another date only if really better), Decision duel (winner by overdraft risk, then median end balance, then median lowest balance), and a scheduler (weekly digest, daily pace check; email only if SMTP is configured; every digest is stored and shown in the Digest card).
+Also: CSV upload (`date, description, amount` + opening balance + profile name), three personas (priya, arjun, meera), a **Why?** panel per recommendation (finding ids, evidence, verifier note), goals, "Can I afford it?" (optionally financed; suggests another date only if really better), Decision duel (winner by overdraft risk, then median end balance, then median lowest balance; the computed result line is always shown, and a narration that names a different winner is rejected), and a scheduler (weekly digest, daily pace check; email only if SMTP is configured; every digest is stored and shown in the Digest card).
 
 ## Trust model
 
@@ -54,12 +59,13 @@ What the Verifier re-computes for each recommendation before display:
 - **Claims from raw transactions:** `monthly_cost`, `annual_cost`, `txn_amount`, `month_total`, `pct_change`. Tolerance: money max(₹1, 2%), `pct_change` 3 points. `month_total` and `pct_change` reuse the spike engine's aggregation, so they agree with the engine by construction.
 - **Weather/forecast claims:** `breach_probability`, `storm_peak`, `storm_peak_after_cut` are re-fit from the raw transactions and **re-run through the same engine** (seed 0, 1,000 paths). This is a **consistency check, not an independent implementation**, the same caveat as spike aggregation. Tolerance 0.5 percentage points. A storm claim whose date is outside the storm window is unverifiable and dropped.
 - **Role-bound weather claims:** each claim must appear as a percent token, and in a "peak, then after-cut" sentence the higher peak must come first. Swapped numbers are caught even though each is individually real.
-- **Text numbers:** every number in advice must match a claim or an engine-evidence value (within max(₹1, 1%); a percentage only against percent-like values). The weather narration is **strict**: only intentionally supplied values count (percents within 0.5 point, money within max(₹1, 0.1%)), number words next to percent/rupee/lakh/crore are rejected, and weather words may not exceed the worst computed label (a storm outlook cannot be called clear).
+- **Text numbers:** every number in advice must match a claim or an engine-evidence value (within max(₹1, 1%); a percentage only against percent-like values). The weather narration is **strict**: only intentionally supplied values count (percents within 0.5 point, money within max(₹1, 0.1%)), number words next to percent/rupee/lakh/crore are rejected, and weather words may not contradict the computed worst label (best-effort wording filter). The forecast, affordability and duel narrations use the same strict mode.
+- **Risk wording (best-effort):** LLM prose on the forecast, affordability, duel and weather paths is rejected when it contradicts the computed risk without using a number: no-risk wording ("zero chance", "will not be overdrawn", "no breach", "looks fine") when the risk is real, certainty ("definitely overdrawn") when it is under 50%, and quantity words with futures ("half of futures fail") that do not match the failing share. A duel narration must name the computed winner.
 - **Text hygiene (best-effort):** LLM prose is rejected if over 600 characters, if it contains `<`, `>` or backticks, URLs or common domains, or money-movement words (transfer, wire, invest, crypto, borrow, loan, send money, move savings). Rejected prose silently falls back to deterministic text.
 - On any issue the claims are corrected to the recomputed values and the text is rewritten (LLM rewrite if itself clean, else a template). A claim that cannot be recomputed drops the recommendation.
 
 Limits, stated plainly:
-- **Number-free prose cannot be verified.** "Your account is compromised, move your savings" has no number; hygiene catches only the obvious words.
+- **Number-free prose cannot be verified.** "Your account is compromised, move your savings" has no number; hygiene and the risk-wording filter catch only common phrasings.
 - `behavior_trigger`, `goal_behind` and `forecast_risk` without weather are `evidence_only`: their numbers are checked against the engine's own evidence, not raw transactions.
 - Small numbers (bare values under 10, constants 12/24/30/60/90/100) are not checked unless followed by `%` or a currency token; the tolerance lets a number slightly off a real value pass; dates are not checked.
 - The URL filter catches `.com/.io/.org/.net` names, and `.in` or `.co` only when followed by `/`; a bare `.in` domain passes.
@@ -215,7 +221,7 @@ Scheduler jobs (server local time): weekly digest Monday 09:00 (from stored reco
 - The CI workflow `.github/workflows/agent-arena-2026-checks.yml` (required by the hackathon) downloads a script from the hackathon server and runs it with repository secrets available. Use a revocable Mesh key.
 
 ## Test status
-`.venv/bin/python -m pytest -q`: **503 passed** (about 100 s), fully offline: no network and no LLM key. Run locally on Python 3.14 (pandas 3.0.6); the Dockerfile targets 3.12 and the CI workflow 3.11.
+`.venv/bin/python -m pytest -q`: **560 passed** (about 105 s), fully offline: no network and no LLM key. Run locally on Python 3.14 (pandas 3.0.6); the Dockerfile targets 3.12 and the CI workflow 3.11.
 
 ## Before you submit (owner checklist)
 - [ ] Put a Mesh key in `.env`, run `make eval` then `make eval-sync`, and commit `eval/results.*` and the README (fills hybrid, ablation, grounding).

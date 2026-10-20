@@ -1,9 +1,17 @@
 .env
+.env.*
 .git
+.gitignore
+.venv/
+venv/
 __pycache__/
 *.pyc
 *.db
-.venv/
+*.db-journal
 .pytest_cache/
 .superpowers/
+.claude/
+.DS_Store
+node_modules/
 eval/cache/
+# NOTE: eval/ itself must stay in the image: finpilot imports eval.generate.

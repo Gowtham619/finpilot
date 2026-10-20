@@ -56,6 +56,7 @@ class Result:
     dates: pd.DatetimeIndex
     paths: np.ndarray
     disc_by_cat: np.ndarray | None = None  # n x cats total discretionary spend (detail=True only)
+    disc_cum_by_cat: np.ndarray | None = None  # n x horizon x cats cumulative spend (detail=True only)
 
     @property
     def p10(self): return np.percentile(self.paths, 10, axis=0)
@@ -91,6 +92,8 @@ def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts
     """Weekday-matched bootstrap. `cuts` (per-category fractions) and `spend_scale` (global
     multiplier on discretionary spend, 0..3) never touch the RNG stream, so results are
     common-random-number comparable across cuts / spend_scale / extra_flows."""
+    if isinstance(spend_scale, bool):
+        raise ValueError("spend_scale must be a number in 0..3")
     try:
         spend_scale = float(spend_scale)
     except (TypeError, ValueError):
@@ -100,7 +103,8 @@ def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts
     rng = np.random.default_rng(seed)
     dates = pd.date_range(model.last_date + pd.Timedelta(days=1), periods=horizon)
     fixed = recurring_flows(model, dates)
-    for d, a in extra_flows:
+    for ef in extra_flows:  # (date, amount[, label])
+        d, a = ef[0], ef[1]
         d = pd.Timestamp(d).normalize()
         if d in dates:
             fixed[dates.get_loc(d)] += a
@@ -117,10 +121,15 @@ def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts
         scale = scale * spend_scale
     disc = (model.daily[rows] * scale).sum(axis=2) if model.cats else np.zeros((n, horizon))
     paths = balance + np.cumsum(fixed[None, :] - disc, axis=1)
-    by_cat = None
+    by_cat = cum = None
     if detail:
-        by_cat = (model.daily[rows].sum(axis=1) * scale) if model.cats else np.zeros((n, 0))
-    return Result(dates, paths, by_cat)
+        if model.cats:
+            per_day = model.daily[rows] * scale          # n x horizon x cats
+            cum = np.cumsum(per_day, axis=1)
+            by_cat = cum[:, -1, :]
+        else:
+            cum, by_cat = np.zeros((n, horizon, 0)), np.zeros((n, 0))
+    return Result(dates, paths, by_cat, cum)
 
 
 def goal_status(model, balance, target, deadline, n=1000, seed=0, max_horizon=365):

@@ -1,0 +1,40 @@
+{
+  "good_01_everything.csv": {
+    "profile": "ananya",
+    "opening_balance": 60000,
+    "rows": 656,
+    "first": "2025-11-01",
+    "last": "2026-10-19"
+  },
+  "good_02_tight_budget_storms.csv": {
+    "profile": "rohit",
+    "opening_balance": 8000,
+    "rows": 311,
+    "first": "2025-11-01",
+    "last": "2026-10-19"
+  },
+  "good_03_freelancer_irregular_income.csv": {
+    "profile": "kabir",
+    "opening_balance": 80000,
+    "rows": 318,
+    "first": "2025-11-03",
+    "last": "2026-10-17"
+  },
+  "good_04_subscription_overlap.csv": {
+    "profile": "neha",
+    "opening_balance": 40000,
+    "rows": 157,
+    "first": "2026-03-01",
+    "last": "2026-10-19"
+  },
+  "good_06_mixed_channels_known_limitation.csv": {
+    "profile": "mixed",
+    "opening_balance": 30000,
+    "rows": 48
+  },
+  "good_05_llm_categorization_stress.csv": {
+    "profile": "llmtest",
+    "opening_balance": 20000,
+    "rows": 207
+  }
+}

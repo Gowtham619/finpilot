@@ -85,3 +85,20 @@ def test_ungrounded_suffixes_and_currency_escapes():
     assert flag("in 2026") == []
     assert flag("over 60 days") == []
     assert flag("Charged 2026-06-22 and 2026-06.") == []
+
+
+def test_percent_words_count_as_percent():
+    claims = []
+    flag = lambda t, ev: V.ungrounded_numbers(t, claims, ev)
+    ev = {"p_overdraft": 0.0}
+    for w in ("percent", "per cent", "pct", "percentage points"):
+        assert flag(f"There is a 60 {w} chance you go overdrawn.", ev) == [60.0], w
+        assert flag(f"There is a 0 {w} chance you go overdrawn.", ev) == [], w
+
+
+def test_forecast_narrative_with_percent_word_rejected():
+    from finpilot.agents.common import grounded_or
+    ev = {"s": {"p_overdraft": 0.0}}
+    assert grounded_or("There is a 60 percent chance you go overdrawn within 30 days.", ev, "fb") == "fb"
+    ok = "There is a 0 percent chance you go overdrawn within 30 days."
+    assert grounded_or(ok, ev, "fb") == ok

@@ -81,7 +81,7 @@ def _flatten_numbers(obj):
 _SUFFIX = {"k": 1e3, "lakh": 1e5, "lakhs": 1e5, "lac": 1e5, "lacs": 1e5,
            "crore": 1e7, "crores": 1e7, "cr": 1e7}
 _TOKEN = re.compile(r"(?P<cur>₹|\$|(?<![A-Za-z])(?:Rs\.?|INR|USD))?\s*(?P<num>\d[\d,]*\.?\d*)\s*"
-                    r"(?P<suf>(?:lakhs?|lacs?|crores?|cr|k)\b)?(?P<pct>\s*%)?", re.I)
+                    r"(?P<suf>(?:lakhs?|lacs?|crores?|cr|k)\b)?(?P<pct>\s*(?:%|(?:percentage\s+points?|per\s*cent|percent|pct)\b))?", re.I)
 _DATE = re.compile(r"(?<!\d)(19|20)\d{2}-\d{2}(-\d{2})?(?!\d)")
 
 
@@ -126,7 +126,7 @@ def _keyed_numbers(obj, key=""):
 def ungrounded_numbers(text, claims, evidence):
     """Numbers in text that match no claim value or evidence number. Exempt (not checked): ISO dates,
     bare 4-digit years 1990-2100, and BARE numbers under 10 or in ALLOWED_CONSTANTS. A number followed
-    by '%' or preceded by a currency token (₹, Rs, INR, $, USD) is always checked, and a percentage
+    by '%' (or 'percent', 'per cent', 'pct', 'percentage points') or preceded by a currency token (₹, Rs, INR, $, USD) is always checked, and a percentage
     must match a percent-like value: a probability/fraction in [0, 1] times 100, a pct_change claim, or
     an evidence value whose key names a percentage (pct, percent, share, rate)."""
     vals = [c.get("value") for c in claims if isinstance(c, dict)]

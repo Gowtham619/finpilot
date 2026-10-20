@@ -198,3 +198,13 @@ def test_best_date_simulates_installments():
     fin = S.best_date(m, 10000, 9000, [d1], horizon=35, financed_months=3)
     assert lump[0]["p_overdraft"] == 1.0  # 9000 at once: overdrawn by day 11
     assert fin[0]["p_overdraft"] == 0.0 and fin[0]["floor_p50"] == 500.0  # two 3000 installments in window
+
+
+def test_best_date_reports_and_filters_ignored_installments():
+    m = _flat_model()
+    c = [m.last_date + pd.Timedelta(days=d) for d in (1, 25)]
+    allr = S.best_date(m, 10000, 9000, c, horizon=40, financed_months=2)
+    by = {r["date"]: r["ignored_flows"] for r in allr}
+    assert by[str(c[0].date())] == 0 and by[str(c[1].date())] == 1  # 2nd installment falls past day 40
+    only = S.best_date(m, 10000, 9000, c, horizon=40, financed_months=2, max_ignored=0)
+    assert [r["date"] for r in only] == [str(c[0].date())]

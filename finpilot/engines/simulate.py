@@ -42,16 +42,22 @@ def simulate_purchase(model, balance, amount, on, horizon=60, n=1000, seed=0, fi
             "delta_end_p50": round(a["end_p50"] - b["end_p50"], 2)}
 
 
-def best_date(model, balance, amount, candidates, horizon=60, n=1000, seed=0, financed_months=0):
-    """Candidate start dates ranked by risk; a financed purchase is simulated as its installments."""
+def best_date(model, balance, amount, candidates, horizon=60, n=1000, seed=0, financed_months=0,
+              max_ignored=None):
+    """Candidate start dates ranked by risk; a financed purchase is simulated as its installments.
+    Each entry carries ignored_flows (installments past the window). With max_ignored, candidates that
+    drop more installments than that are excluded: dropping a payment would make a date look safer."""
     out = []
     start, end = _window(model, horizon)
     for c in candidates:
         if not (start <= pd.Timestamp(c).normalize() <= end):
             continue
-        r = monte_carlo(model, balance, horizon, n, seed,
-                        extra_flows=purchase_flows(amount, c, financed_months))
-        out.append({"date": str(pd.Timestamp(c).date()), **r.summary()})
+        flows = purchase_flows(amount, c, financed_months)
+        ign = _count_ignored(model, horizon, flows)
+        if max_ignored is not None and ign > max_ignored:
+            continue
+        r = monte_carlo(model, balance, horizon, n, seed, extra_flows=flows)
+        out.append({"date": str(pd.Timestamp(c).date()), "ignored_flows": ign, **r.summary()})
     return sorted(out, key=lambda x: (x["p_overdraft"], -x["floor_p50"]))
 
 

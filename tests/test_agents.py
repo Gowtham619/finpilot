@@ -96,7 +96,8 @@ def test_fallback_narratives_pass_own_grounding_check(world):
         for fm in (0, 6):
             req = {"amount": amount, "date": d0, "financed_months": fm}
             out = simulator.afford(f["model"], f["balance"], req, None)
-            ev = {"sim": out["sim"], "best": out["best_dates"], "fix": out["fix"], "amount": amount}
+            ev = {"sim": out["sim"], "best": out["best_dates"], "fix": out["fix"], "amount": amount,
+                  "target_p": simulator.SAFE_P}
             assert ungrounded_numbers(out["narrative"], [], ev) == [], out["narrative"]
     req = {"a": {"name": "Buy now", "amount": 150000, "date": d0}, "b": {"name": "Skip", "amount": 0, "date": d0}}
     out = simulator.run_duel(f["model"], f["balance"], req, None)
@@ -196,8 +197,8 @@ def test_afford_text_only_suggests_really_better_dates(world):
 
 
 def test_afford_horizon_covers_installments():
-    assert simulator.afford_horizon(0) == 60 and simulator.afford_horizon(1) == 62
-    assert simulator.afford_horizon(6) == 217 and simulator.afford_horizon(11) == 365
+    assert simulator.afford_horizon(0) == 60 and simulator.afford_horizon(1) == 118
+    assert simulator.afford_horizon(6) == 273 and simulator.afford_horizon(11) == 365
     assert simulator.afford_horizon(60) == 365
 
 
@@ -228,3 +229,74 @@ def test_adversarial_narration_with_false_percent_is_rejected(world):
         lambda s, u: {"narrative": "There is a 60% chance you go overdrawn within 30 days."}))
     if f["summary"]["p_overdraft"] != 0.6:
         assert "60%" not in f["narrative"]
+
+
+# ---- fix round: honest financed date suggestion, cut wording ----
+def test_better_date_never_prefers_dropped_installments():
+    chosen = {**_chosen(0.44, 500), "ignored_flows": 0}
+    later = {**_chosen(0.22, 9000, "2026-11-12"), "ignored_flows": 1}
+    assert simulator.better_date([later], chosen) is None
+    assert simulator.better_date([{**later, "ignored_flows": 0}], chosen) is not None
+
+
+def test_afford_horizon_covers_latest_candidate():
+    assert simulator.afford_horizon(0) == 60
+    assert simulator.afford_horizon(12) == 365 and simulator.afford_horizon(24) == 365
+    assert simulator.afford_horizon(3) == 31 * 3 + 31 + 56
+    assert simulator.afford_horizon(1) == 118
+
+
+def test_afford_dropped_installment_date_not_suggested(world, monkeypatch):
+    p, df = world
+    f = forecaster.run(df, p.opening_balance, (), None)
+    d0 = str(f["model"].last_date.date() + pd.Timedelta(days=1))
+    fake = [{"date": "2026-12-30", "p_overdraft": 0.0, "floor_p50": 90000.0, "ignored_flows": 1}]
+    monkeypatch.setattr(simulator.S, "best_date", lambda *a, **k: fake)
+    out = simulator.afford(f["model"], f["balance"], {"amount": 150000, "date": d0, "financed_months": 12}, None)
+    assert "date tested" not in out["narrative"]
+
+
+@pytest.mark.parametrize("fm", [12, 24])
+def test_afford_priya_suggestions_never_rely_on_dropped_installments(world, fm):
+    p, df = world
+    f = forecaster.run(df, p.opening_balance, (), None)
+    m, bal = f["model"], f["balance"]
+    d0 = str(m.last_date.date() + pd.Timedelta(days=1))
+    out = simulator.afford(m, bal, {"amount": 150000, "date": d0, "financed_months": fm}, None)
+    hz = out["sim"]["horizon"]
+    for b in out["best_dates"]:
+        assert b["ignored_flows"] <= out["sim"]["ignored_flows"]
+    if "date tested" in out["narrative"]:
+        alt = simulator.better_date(out["best_dates"], {"date": out["sim"]["date"], **out["sim"]["with_purchase"],
+                                                        "ignored_flows": out["sim"]["ignored_flows"]})
+        r = simulator.S.simulate_purchase(m, bal, 150000, alt["date"], horizon=hz, financed_months=fm)
+        assert r["ignored_flows"] <= out["sim"]["ignored_flows"]
+
+
+def test_afford_cut_claims_risk_from_fix_result(world):
+    import re
+    p, df = world
+    f = forecaster.run(df, p.opening_balance, (), None)
+    d0 = str(f["model"].last_date.date() + pd.Timedelta(days=1))
+    for amount in (30000, 60000, 80000, 120000, 200000):
+        out = simulator.afford(f["model"], f["balance"], {"amount": amount, "date": d0, "financed_months": 0}, None)
+        fix, t = out["fix"], out["narrative"]
+        assert "To make it safe" not in t
+        if fix and fix["cut_pct"]:
+            m = re.search(r"down to about (\d+)%, cut", t)
+            assert m and int(m.group(1)) == round(fix["p_overdraft"] * 100) and fix["p_overdraft"] <= 0.05
+        elif fix is None:
+            assert "No single cut tested brings the risk under 5%." in t
+
+
+def test_afford_no_fix_wording(world, monkeypatch):
+    p, df = world
+    f = forecaster.run(df, p.opening_balance, (), None)
+    d0 = str(f["model"].last_date.date() + pd.Timedelta(days=1))
+    monkeypatch.setattr(simulator.S, "cheapest_fix", lambda *a, **k: None)
+    out = simulator.afford(f["model"], f["balance"], {"amount": 900000, "date": d0}, None)
+    assert "No single cut tested brings the risk under 5%." in out["narrative"]
+    called = {}
+    monkeypatch.setattr(simulator.S, "cheapest_fix", lambda *a, **k: called.update(k) or None)
+    simulator.afford(f["model"], f["balance"], {"amount": 900000, "date": d0}, None)
+    assert called["target_p"] == 0.05

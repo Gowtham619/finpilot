@@ -97,7 +97,7 @@ def _credits(df, model):
 
 def make_model(df, opt):
     win = opt.get("win", 90)
-    m = BASE_FIT(df, win if isinstance(win, int) else 90)
+    m = BASE_FIT(df, win if isinstance(win, int) else 90, robust_pool=bool(opt.get("robust_pool")))
     m._opt = {}
     if opt.get("last_amount"):  # (b1) last observed amount for low-cv recurring items
         for x in m.recurring:
@@ -166,6 +166,7 @@ CANDIDATES = [  # (name, options, eligible for adoption)
     ("d: day-of-month profile blend, v tuned in-sample", {"v": "tune"}, True),
     ("b2+c combined", {"credits": True, "w": "tune"}, True),
     ("e: fit window tuned in-sample (60/90/120/180)", {"win": "tune"}, True),
+    ("e [task 5b, pre-registered, parameter-free]: robust bootstrap pool (drop flagged large charges + later duplicate)", {"robust_pool": True}, True),
     ("sensitivity: fixed 60-day window", {"win": 60}, False),
     ("sensitivity: fixed 120-day window", {"win": 120}, False),
     ("sensitivity: fixed 180-day window", {"win": 180}, False),
@@ -192,10 +193,11 @@ def run_all():
             s = score(gens)
             base = base or s
             rows.append((name, s, eligible, verdict(base, s), {k: sorted(set(v)) for k, v in chosen.items()}))
-        R.F.fit = BASE_FIT
-        for sd in (1, 2, 3, 4):  # noise floor: the committed engine with a different Monte Carlo seed
-            R.F.monte_carlo = lambda m, b, h=60, n=1000, seed=0, *a, _sd=sd, **kw: BASE_MC(m, b, h, n, _sd, *a, **kw)
-            rows.append((f"noise floor: committed engine, MC seed {sd}", score(gens), False, None, {}))
+        for label, rp in (("committed engine", False), ("candidate e robust_pool=True", True)):
+            R.F.fit = (lambda df, window_days=90: BASE_FIT(df, window_days, robust_pool=True)) if rp else BASE_FIT
+            for sd in (1, 2, 3, 4):  # noise floor / seed robustness: a different Monte Carlo seed
+                R.F.monte_carlo = lambda m, b, h=60, n=1000, seed=0, *a, _sd=sd, **kw: BASE_MC(m, b, h, n, _sd, *a, **kw)
+                rows.append((f"noise floor: {label}, MC seed {sd}", score(gens), False, None, {}))
     finally:
         R.F.fit, R.F.monte_carlo = BASE_FIT, BASE_MC
     return rows

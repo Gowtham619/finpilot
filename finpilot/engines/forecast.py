@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .analyze import detect_recurring
+from .analyze import detect_recurring, duplicate_charges, txn_outliers
 
 
 @dataclass
@@ -22,7 +22,9 @@ def current_balance(df, opening):
     return float(opening + df["amount"].sum())
 
 
-def fit(df, window_days=90) -> Model:
+def fit(df, window_days=90, robust_pool=False) -> Model:
+    """robust_pool: drop flagged large charges (txn_outliers, recurring excluded, as analyze_all)
+    and the later charge of flagged duplicates (duplicate_charges) from the discretionary pool."""
     if df is None or len(df) == 0:
         raise ValueError("need at least 1 day of history")
     rec = detect_recurring(df)
@@ -31,6 +33,9 @@ def fit(df, window_days=90) -> Model:
     start = max(end - pd.Timedelta(days=window_days - 1), df["date"].min().normalize())
     idx = pd.date_range(start, end)
     disc = df[(~df["merchant"].isin(rec_m)) & (df["amount"] < 0) & (df["date"] >= idx[0])]
+    if robust_pool:
+        drop = [f["txn_id"] for f in txn_outliers(df, rec_m)] + [f["txn_id"] for f in duplicate_charges(df)]
+        disc = disc.drop(index=drop, errors="ignore")
     cats = sorted(disc["category"].unique())
     if cats:
         mat = (disc.assign(d=disc["date"].dt.normalize(), s=-disc["amount"])

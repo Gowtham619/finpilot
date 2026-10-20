@@ -26,6 +26,7 @@ coverage moves toward 0.80 by >= 0.03 on each generator, AND balance MAPE worsen
 | d: day-of-month profile blend, v tuned in-sample | 0.0496 | 0.1447 | 0.6832 | 0.3075 | 0.2229 | 0.4662 | no | v in [0.0, 0.25, 0.5, 0.75, 1.0] |
 | b2+c combined | 0.0418 | 0.128 | 0.765 | 0.2403 | 0.1507 | 0.9131 | no | w in [0.0, 0.25] |
 | e: fit window tuned in-sample (60/90/120/180) | 0.045 | 0.1467 | 0.8447 | 0.2222 | 0.1514 | 0.7621 | no | win in [60, 90, 120, 180] |
+| e [task 5b, pre-registered, parameter-free]: robust bootstrap pool (drop flagged large charges + later duplicate) | 0.0322 | 0.08 | 0.8843 | 0.2287 | 0.1445 | 0.5796 | no | - |
 | sensitivity: fixed 60-day window | 0.0397 | 0.1075 | 0.7824 | 0.2087 | 0.1497 | 0.8159 | yes (not eligible) | - |
 | sensitivity: fixed 120-day window | 0.0427 | 0.1365 | 0.8517 | 0.1986 | 0.1246 | 0.7906 | no (not eligible) | - |
 | sensitivity: fixed 180-day window | 0.0379 | 0.1164 | 0.8948 | 0.2199 | 0.1503 | 0.7147 | no (not eligible) | - |
@@ -33,3 +34,7 @@ coverage moves toward 0.80 by >= 0.03 on each generator, AND balance MAPE worsen
 | noise floor: committed engine, MC seed 2 | 0.0421 | 0.1316 | 0.8123 | 0.2412 | 0.1789 | 0.7471 | - | - |
 | noise floor: committed engine, MC seed 3 | 0.0428 | 0.1321 | 0.8337 | 0.2434 | 0.1727 | 0.7435 | - | - |
 | noise floor: committed engine, MC seed 4 | 0.0416 | 0.1302 | 0.8157 | 0.2475 | 0.1834 | 0.7684 | - | - |
+| noise floor: candidate e robust_pool=True, MC seed 1 | 0.032 | 0.0819 | 0.8661 | 0.2313 | 0.1454 | 0.5761 | - | - |
+| noise floor: candidate e robust_pool=True, MC seed 2 | 0.0322 | 0.0821 | 0.8624 | 0.2241 | 0.1414 | 0.5723 | - | - |
+| noise floor: candidate e robust_pool=True, MC seed 3 | 0.0315 | 0.0803 | 0.866 | 0.2281 | 0.1458 | 0.5794 | - | - |
+| noise floor: candidate e robust_pool=True, MC seed 4 | 0.0317 | 0.0794 | 0.8551 | 0.2287 | 0.1442 | 0.5905 | - | - |

@@ -21,18 +21,45 @@ def pick_action(recs):
                                     -(r.get("est_monthly_savings", 0) + r.get("est_one_off", 0))), default=None)
 
 
+def verification_phrase(rec):
+    """How the recommendation's numbers were checked, in words (never more than what happened)."""
+    return ("recomputed from your transactions" if rec.get("verification") == "recomputed"
+            else "checked against engine evidence")
+
+
+def weather_line(wx):
+    """One deterministic line from the stored Money Weather report (None if there is none)."""
+    if not isinstance(wx, dict) or "headline" not in wx:
+        return None
+    from .agents.meteorologist import fallback_texts
+    try:
+        line = "Money Weather: " + fallback_texts(wx)["headline_text"]
+        if wx.get("storms"):
+            st = wx["storms"][0]  # sorted by peak risk
+            line += (f" Worst storm window: {st['start']} to {st['end']} "
+                     f"(peak {st['peak_p']*100:.0f}% chance of dropping below the safety buffer).")
+        return line
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def build_digest(profile):
     with db.session() as s:
         recs = [r for r in db.load_recs(s, profile) if r.get("verified")]
-        fc = (db.load_forecast(s, profile) or {}).get("forecast")
+        stored = db.load_forecast(s, profile) or {}
+    fc, wx = stored.get("forecast"), stored.get("weather")
     if not recs and not fc:
         return f"No data yet for {profile}."
     insight = (fc or {}).get("narrative") or "No forecast yet."
     best = pick_action(recs)
-    lines = [f"FinPilot weekly digest for {profile}", "", f"Key insight: {insight}", ""]
+    lines = [f"FinPilot weekly digest for {profile}", "", f"Key insight: {insight}"]
+    wl = weather_line(wx)
+    if wl:
+        lines.append(wl)
+    lines.append("")
     lines.append(f"One action: {best['text']}" if best else "One action: nothing urgent this week.")
     if best:
-        lines.append(f"Why: triggered by {', '.join(best.get('finding_ids', []))} (verified against your transactions).")
+        lines.append(f"Why: triggered by {', '.join(best.get('finding_ids', []))} ({verification_phrase(best)}).")
     for g in (fc or {}).get("goals", []):
         if "p_met" not in g:  # error entry {"name", "error"}
             continue

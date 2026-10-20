@@ -19,6 +19,7 @@ from .trace import trace
 
 PROFILE_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 MAX_ROWS = 50000
+MAX_QUESTION = 500
 
 
 def check_profile(profile):
@@ -251,6 +252,12 @@ def request(profile, req):
     if df is None:
         raise LookupError(f"no data for profile '{profile}'")
     d0 = str((df["date"].max() + pd.Timedelta(days=1)).date())
+    if rtype == "chat":
+        q = req.get("question")
+        if not isinstance(q, str) or not q.strip():
+            raise ValueError("question must be a non-empty string")
+        if len(q) > MAX_QUESTION:
+            raise ValueError(f"question is too long (max {MAX_QUESTION} characters)")
     if rtype == "weather":
         req = {"type": "weather", "params": weather_params(req.get("params", {k: v for k, v in req.items() if k != "type"}))}
     elif rtype == "afford":

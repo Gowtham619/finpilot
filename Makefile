@@ -1,4 +1,4 @@
-PYTHON ?= python3
+PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 .PHONY: test eval eval-sync eval-check run docker-build docker-run
 test:
 	$(PYTHON) -m pytest -q

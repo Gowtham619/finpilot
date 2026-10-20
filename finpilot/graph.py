@@ -79,12 +79,18 @@ def build_graph(llm=None, tr=default_trace, persist=None):
         return {"recs": recs}
 
     def n_verify(state):
-        emit(state, "verifier", "start", "recomputing every cited number from raw transactions")
+        n_re = sum(1 for r in state["recs"] if r.get("claims"))
+        emit(state, "verifier", "start",
+             f"checking every number in {len(state['recs'])} recommendations: {n_re} with claims recomputed "
+             f"from raw transactions, {len(state['recs']) - n_re} against the engine's own evidence only")
         kept, dropped = verifier.verify_all(
             state["recs"], state["df"], llm,
             emit=lambda kind, summary, data=None: emit(state, "verifier", kind, summary, data),
             ctx={"opening": state["opening"]})
-        emit(state, "verifier", "result", f"{len(kept)} verified, {len(dropped)} dropped")
+        k_re = sum(1 for r in kept if r.get("verification") == "recomputed")
+        emit(state, "verifier", "result",
+             f"{len(kept)} verified ({k_re} recomputed from transactions, {len(kept) - k_re} checked against "
+             f"engine evidence only), {len(dropped)} dropped")
         return {"recs": kept, "dropped": dropped}
 
     def n_persist(state):

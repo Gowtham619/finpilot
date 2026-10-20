@@ -1,37 +1,55 @@
-# 60-second demo script
+# Demo script
 
-Tabs in the UI: **Dashboard, Can I afford...?, Decision duel, Recommendations, Goals, Chat**. The right-hand panel is the live agent trace. Start the app with `FINPILOT_AUTOSEED=1` (or the Docker image) and a valid `MESH_API_KEY` for the live-model version.
+Numbers below are what the **seeded demo persona Priya** shows (synthetic data; balance ₹98,465; safety buffer ₹13,212). They come from the Guided-demo run recorded in the task-7a report and a fresh local run of `GET /api/weather/priya` (seed 0, 1,000 paths); they are not general results. Start the app with `make run` and `FINPILOT_AUTOSEED=1` (or the Docker image). A Mesh key is optional: without one, the template narration runs.
+
+## (a) One click: press "Guided demo"
+
+The button in the header plays a self-driving tour over the real UI (about 67 s). Pause, Skip step, Replay and Esc work; if a step fails the tour stops with a red caption instead of faking success. Say one sentence per beat:
+
+| Time | Step | Caption on screen (abridged) | What to say |
+|---|---|---|---|
+| 0:00 | 1 Load | "Loading Priya, a synthetic persona with six months of bank transactions..." then "Pipeline done..." | "Five agents just ran live; you can see each one in the trace." |
+| 0:04 | 2 Dashboard | "Balance ₹98,465. Overdraft risk over the next 60 days: 0%." then the fan chart | "A Monte Carlo of recent habits and recurring bills: p10, median, p90." |
+| 0:15 | 3 Money Weather | "Normal 60 days: Clear skies. 0% chance of dipping below the safety buffer." | "Honest start: Priya is fine, so nothing is stormy." |
+| 0:19 | | "Now a big purchase: Storm ahead. 77% chance of a dip..." | "A ₹94,000 purchase puts 77% of futures below the buffer." |
+| 0:23 | | Autopsy, then an umbrella applied: "With the umbrella: 69% (was 77%)." | "The autopsy says which habits drive the failing futures; the umbrella is the cut with the best measured risk reduction per ₹1,000." |
+| 0:34 | | Lifestyle slider: 85% gives 35%, 70% gives 5%, back to 100% gives 69% | "Spend 30% less on discretionary and the storm nearly disappears." |
+| 0:45 | 4 Why? | "Why? opens the evidence. Verifier (recomputed): all claims recomputed from transactions" | "Every recommendation shows its evidence and what the Verifier re-computed." |
+| 0:50 | 5 Afford | "Can I afford ₹59,000 (about 60% of the balance)?" then "Verdict: safe." | "It simulates the purchase against the same futures." |
+| 0:56 | 6 Duel | "spend ₹79,000 now, or wait about two months (Nov 26)" then the winner line | "Two options on identical random futures; the winner comes with numbers." |
+| 1:03 | 7 Digest | "Send digest now" is clicked and a digest card appears | "A stored weekly digest, emailed only if SMTP is configured." |
+| 1:07 | 8 End | "That is FinPilot..." with Replay | "Engines compute, models narrate, the Verifier checks." |
+
+## (b) Manual 90-second path (live presentation)
+
+1. Press **Load persona** (priya). Point at the trace panel: Categorizer, Analyzer, Forecaster, Advisor, Verifier.
+2. Tab **Money Weather**: Normal 60 days is **Clear skies** (0%). Say so: this is why stress scenarios exist.
+3. Click **Big purchase**: amount prefills 94,000, the chip shows **Storm ahead**, 77% headline, worst day 2026-10-31 (74.9%), first storm window 2026-10-24 to 2026-10-31.
+4. Click the first **storm card**: its days highlight in the calendar. Read the **Autopsy**: top drivers are groceries (about 46% of the gap) and shopping (about 31%). It is an attribution over simulated paths, not proof of cause.
+5. In **Umbrellas**, the top one is food delivery -20% (77% to 69%, about ₹1,227/month sacrifice). Click **Apply to the map**.
+6. Drag the **Lifestyle** slider to 85% (about 35%), then 70% (about 5%), both with the umbrella applied. Without the umbrella the same slider gives about 44% and 8%.
+7. **Can I afford...?**: enter 59,000, run it, read the verdict (safe) and the date options.
+8. **Decision duel**: option A buy now 79,000; option B wait to about 2026-11-26. Click "Run both futures" and read the winner line aloud.
+9. **Recommendations**: open **Why?** on "Cancel HOTSTAR" (finding ids, evidence JSON, verifier note: recomputed).
+10. **Dashboard**: the **Digest** card, then **Send digest now**.
+
+## (c) Questions judges will ask
+
+- **Is the Verifier independent?** Partly. Money claims (subscription cost, a transaction amount) are re-computed straight from the raw transactions. Aggregations (`month_total`, `pct_change`) reuse the spike engine's code, and the weather claims (`breach_probability`, `storm_peak`, `storm_peak_after_cut`) re-run the same Monte Carlo from the raw data with seed 0. Those are consistency checks, not an independent implementation. It also cannot verify number-free prose.
+- **Is the data real?** No. Everything is synthetic: three personas from one generator that also planted the anomalies, plus a second generator by the same author as a robustness check, on which several engines degrade (rules-only categorization 0.86 to 0.33). A real-data check exists (`eval/real_data.py`) but has not been run.
+- **Why does it need no key?** Engines do all the arithmetic; the LLM only labels leftovers, phrases and drafts. Every agent has a deterministic template path, so the app, the Verifier and the whole test suite run without a key. The LLM-dependent evaluations (hybrid categorization, ablation, grounding rate) are therefore **not run**; they need `make eval` with a key.
+
+## (d) If the live model produces no Verifier catch
+
+That is normal: the Verifier only fires when a draft contains a wrong number, and a clean run shows green "ok" events. Do not present it as a catch. Show the scripted cases and say on screen that the LLM is **scripted** to lie:
 
 ```
-0:00  Click "Load persona". The trace panel streams: Categorizer (N by rule, M by LLM, ...) -> Analyzer
-      -> Forecaster -> Advisor -> Verifier -> coordinator "saved results".
-0:15  Point at the Verifier events. "ok" (green) = recomputed and verified. A red "caught" event means
-      a number in a draft recommendation did not match the raw transactions and was corrected.
-      See the note below: with a live model this does not happen on every run.
-0:25  Dashboard tab: spend chart, forecast fan chart (p10/p50/p90), KPIs, and the Findings list
-      (duplicate Amazon charge, large charge, category spikes, subscriptions).
-0:35  Recommendations tab: open "Why?" on "Cancel HOTSTAR" -> finding ids, evidence JSON, verifier note.
-0:45  Decision duel tab: Option A "Buy now", amount 80000, date empty (= the day after the data ends,
-      2026-10-01 for the personas) vs Option B "Wait 2 months", amount 80000, date 2026-12-01.
-      Click "Run both futures": two fan charts and a winner with numbers. For priya (no-LLM run) the
-      app prints: "Wait 2 months wins on lowest balance: overdraft risk 0% vs 0%, median balance in
-      90 days ₹32,993 vs ₹32,993, median lowest balance ₹32,993 vs ₹22,082." Say it plainly: the
-      same ₹80,000 leaves within the 90 days either way, so the end balance is identical; waiting
-      keeps about ₹11,000 more cushion at the low point. (arjun: waiting wins on overdraft risk,
-      19% vs 97%; meera: waiting wins on lowest balance, ₹137,636 vs ₹103,171.)
-0:55  Open the README "Self-evaluation" section: show the forecast-vs-baselines table and the honest
-      reading under it (and the ablation table if `make eval` has been run with a key).
+.venv/bin/python -m pytest tests/test_weather_claims.py -k swapped -q
+.venv/bin/python -m pytest tests/test_graph.py -k hallucination -q
 ```
 
-## About the "Verifier caught" step
+The README's Trust model section prints the real output of the first one: the scripted text "Storm peak 18%, cutting groceries by 30% lowers it to 42%." is flagged `claim_order` and corrected to peak 42%, after-cut 18% (on the test fixture, Priya with a ₹10,000 balance). It shows the mechanism, not how often a real model errs, which has not been measured.
 
-The Verifier only fires `caught` when a draft contains a wrong number. With a real model, that may not occur on a given run: if every claim is already correct you will only see green `ok` events, and that is the correct behaviour. Do not present a clean run as a catch.
+## (e) 60-second spoken script
 
-To show a catch honestly:
-- If one happens in a live run, point at it.
-- Otherwise, run the scripted test and say clearly on screen that the LLM is scripted to give wrong numbers:
-  `python -m pytest tests/test_graph.py -k hallucination -q`
-  and show the Verifier trace (the README contains the output of that scripted run). This demonstrates the mechanism deterministically; it is not a measurement of how often a real model errs.
-- If the model is unavailable (no key), loading a persona still works and shows template recommendations; the Verifier then reports `verified (recomputed)` or `verified (evidence only)` for them, with no catches.
-
-Rehearse once before recording and say what you are showing (live model vs scripted test).
+"FinPilot is a team of agents for your money. I load Priya, a synthetic persona, and you can watch the categorizer, analyzer, forecaster, advisor and verifier work in the trace. The twist is Money Weather: the same Monte Carlo turns her next 60 days into a weather map. Today it is clear skies, which is honest. Now a ₹94,000 purchase: storm ahead, 77% of simulated futures dip below her safety buffer. The autopsy shows which habits drive those failures, and the best umbrella is the cut with the biggest measured risk reduction per thousand rupees. If she spends 30% less on discretionary things, the risk falls to about 5%. Every recommendation has a Why panel, and the Verifier re-computes its numbers from the raw transactions. I will be upfront that for the weather numbers it re-runs the same engine, so that is a consistency check, not independence. The data is synthetic and the app works with no API key at all. Engines compute, models narrate, the Verifier checks."

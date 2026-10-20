@@ -132,18 +132,45 @@
     await act(() => showTab("weather"), "fp:weather", "the Money Weather map", ctx);
   }
 
+  const cap1 = (w) => w.charAt(0).toUpperCase() + w.slice(1);
+  const monthsOf = (st) => (st && st.monthly && st.monthly.months && st.monthly.months.length) || 0;
+  const monthsText = (n) => (n ? `${n} months of` : "its");
+
+  // Duel presets: amounts of 95%, 90%, 85% of the balance; option B just after the next payday (or ~8 weeks
+  // out when no payday is known). Each preset is run through the real duel endpoint and the first whose options
+  // differ (overdraft risk by >= 2 points or median lowest balance by >= 10% of the balance) is used.
+  async function pickDuel(S) {
+    const bal = S.st.balance, d0 = S.st.forecast.bands.dates[0], last = U.addDays(d0, 89);
+    const pays = ((W.data && W.data.paydays) || []).filter((d) => d > d0 && d <= last);
+    const bDate = pays.length ? U.addDays(pays[0], 1) : U.addDays(d0, 56);
+    const bName = `Wait until ${U.fmtDate(bDate)}`;
+    const presets = [0.95, 0.9, 0.85].map((f) => ({ frac: f, amt: U.roundTo(bal * f, 1000) }));
+    for (const p of presets) {
+      const r = await api(`/api/duel/${encodeURIComponent(profile)}`,
+        { a: { name: "Buy now", amount: p.amt }, b: { name: bName, amount: p.amt, date: bDate } });
+      const a = r.answer.a.summary, b = r.answer.b.summary;
+      const dp = Math.abs(a.p_overdraft - b.p_overdraft), dl = Math.abs(a.floor_p50 - b.floor_p50);
+      if (dp >= 0.02 || dl >= 0.1 * Math.abs(bal)) return { ...p, bDate, bName, payday: pays[0] || null, differs: true };
+    }
+    return { ...presets[0], bDate, bName, payday: pays[0] || null, differs: false };
+  }
+
   function buildSteps(S) {
     const bal = () => { if (!S.st || !S.st.has_data) throw new Error("No data loaded, cannot continue."); return S.st.balance; };
     return [
       { id: "load", dwell: 3000, async run(ctx) {
-        caption("Loading Priya, a synthetic persona with six months of bank transactions. The agents analyse it live in the trace.");
+        const who = need("#persona", "the persona list").value || "priya";
+        S.name = cap1(who);
+        const known = STATE && STATE.profile === who ? monthsOf(STATE) : 0;
+        caption(`Loading ${S.name}, a synthetic persona with ${monthsText(known)} bank transactions. The agents analyse it live in the trace.`);
         highlight(need("#loadBtn"));
-        need("#persona").value = "priya";
         await act(() => need("#loadBtn").click(), "fp:rendered", "the persona to load", ctx, 20000);
+        // an earlier render (e.g. the page's own first load) may land first: wait for this persona's state
+        while (!STATE || STATE.profile !== who) { await waitEvt("fp:rendered", "the persona to load", 20000); ctx.check(); }
         S.st = STATE;
         if (!S.st || !S.st.has_data || !S.st.forecast) throw new Error("The pipeline did not finish: no forecast available.");
         highlight(need("#trace"));
-        caption("Pipeline done. The categoriser, analyst, forecaster, advisor and verifier have all reported in the trace.");
+        caption(`Pipeline done on ${monthsText(monthsOf(S.st))} transactions. The categoriser, analyst, forecaster, advisor and verifier have all reported in the trace.`);
       } },
       { id: "dashboard", dwell: 2500, async run(ctx) {
         showTab("dashboard");
@@ -165,21 +192,35 @@
         await act(() => chip.click(), "fp:weather", "the Money Weather map", ctx);
         highlight(need("#wChip"));
         caption(`Now a big purchase: ${$("#wChip").textContent}. ${riskText()} chance of a dip. ${need("#wHeadline").textContent}`);
+        S.duel = pickDuel(S);  // runs in the background; the duel step waits for it
+        S.duel.catch(() => {});
         await ctx.sleep(4500);
-        const card = need("#wStorms .storm", "a storm card");
-        highlight(card); card.click();
-        caption("The autopsy re-runs the failing futures to show which habits and bills cause them.");
+        const card = $("#wStorms .storm");
+        if (card) {
+          highlight(card); card.click();
+          caption("The autopsy re-runs the failing futures to show which habits and bills cause them.");
+        } else {
+          highlight(need("#wStorms", "the storm list"));
+          caption(`No storm window for ${S.name} even with this purchase. The autopsy still explains any failing futures.`);
+        }
         await ctx.sleep(1500);
         highlight(need("#wAutopsy"));
         await ctx.sleep(3500);
-        const umb = need("#wUmbrellas button.act", "an umbrella (intervention)");
-        highlight(umb.closest(".card"));
-        const before = riskText();
-        caption("An umbrella is a spending cut ranked by measured risk reduction. Applying the first one to the map.");
-        await ctx.sleep(1500);
-        await act(() => umb.click(), "fp:weather", "the Money Weather map", ctx);
-        highlight(need("#wRisk"));
-        caption(`With the umbrella: ${riskText()} (was ${before}).`);
+        const umb = $("#wUmbrellas button.act");
+        let withUmb = false;
+        if (umb) {
+          highlight(umb.closest(".card"));
+          const before = riskText();
+          caption("An umbrella is a spending cut ranked by measured risk reduction. Applying the first one to the map.");
+          await ctx.sleep(1500);
+          await act(() => umb.click(), "fp:weather", "the Money Weather map", ctx);
+          highlight(need("#wRisk"));
+          caption(`With the umbrella: ${riskText()} (was ${before}).`);
+          withUmb = true;
+        } else {
+          highlight(need("#wUmbrellas", "the umbrella list"));
+          caption(`No umbrella offered: ${need("#wUmbrellas").textContent.slice(0, 160)}`);
+        }
         await ctx.sleep(3500);
         // lifestyle slider 100 -> 70 -> 100, each step through a real input event on the real slider
         const sl = need("#wLife", "the lifestyle slider");
@@ -188,7 +229,8 @@
         const seq = ctx.reduced ? [70, 100] : [85, 70, 85, 100];
         for (const v of seq) {
           await act(() => setVal(sl, v), "fp:weather", "the Money Weather map", ctx);
-          caption(`Lifestyle spending at ${v}%: ${riskText()} chance of a dip (at the umbrella baseline: ${base}).`);
+          caption(`Non-bill spending (groceries, dining, shopping...) at ${v}%: ${riskText()} chance of a dip ` +
+            `(${withUmb ? "with the umbrella; " : ""}${base} at 100%).`);
           await ctx.sleep(v === 70 || v === 100 ? 2600 : 1200);
         }
       } },
@@ -218,16 +260,21 @@
       { id: "duel", dwell: 2500, async run(ctx) {
         showTab("duel");
         const f = need("#duForm");
-        const amt = U.roundTo(bal() * 0.8, 1000);
-        const dates = S.st.forecast.bands.dates;
-        f.elements.an.value = "Buy now"; f.elements.aa.value = String(amt); f.elements.ad.value = "";
-        f.elements.bn.value = "Wait ~2 months"; f.elements.ba.value = String(amt); f.elements.bd.value = U.addDays(dates[0], 56);
+        bal();
+        const pickP = S.duel || pickDuel(S);
+        const P = await pickP; ctx.check();
+        S.duelPick = P;
+        f.elements.an.value = "Buy now"; f.elements.aa.value = String(P.amt); f.elements.ad.value = "";
+        f.elements.bn.value = P.bName; f.elements.ba.value = String(P.amt); f.elements.bd.value = P.bDate;
         highlight(f);
-        caption(`Decision duel: spend ${U.money(amt)} now, or wait about two months (${U.fmtDate(f.elements.bd.value)}). Both futures are simulated.`);
+        const when = P.payday ? `just after the next payday (${U.fmtDate(P.payday)})` : "about eight weeks later";
+        caption(`Decision duel: spend ${U.money(P.amt)} (${Math.round(P.frac * 100)}% of the balance) now, or on ${U.fmtDate(P.bDate)}, ${when}. ` +
+          (P.differs ? "Both futures run on identical random draws."
+            : `For ${S.name} the options barely differ at 95%, 90% or 85% of the balance, so this shows the 95% case as it is.`));
         await ctx.sleep(2500);
         await act(() => f.requestSubmit(), "fp:duel", "the duel result", ctx);
         highlight(need("#duOut"));
-        caption(need("#duOut .card", "the duel narrative").textContent);
+        caption(need("#duOut .card", "the duel result").textContent);
         await ctx.sleep(2500);
       } },
       { id: "digest", dwell: 2500, async run(ctx) {
@@ -241,7 +288,7 @@
       } },
       { id: "end", dwell: 0, async run() {
         highlight(null);
-        caption("That is FinPilot: agents you can watch, forecasts you can stress-test, and advice a verifier re-computes. Press Replay to watch again.");
+        caption("That is FinPilot: agents you can watch, forecasts you can stress-test, and advice whose numbers are checked against recomputed values or the engine's own evidence. Press Replay to watch again.");
       } },
     ];
   }

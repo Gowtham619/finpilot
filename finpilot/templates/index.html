@@ -44,7 +44,13 @@ canvas{max-height:300px}
 .day:focus-visible,.storm:focus-visible{outline:3px solid #fff;outline-offset:1px}
 .day.hl{outline:3px solid #fbbf24;outline-offset:1px}
 .storm{cursor:pointer;border-left:4px solid #fca5a5}.storm.sel{outline:2px solid #fbbf24}
-.legend span{display:inline-block;margin-right:6px;padding:2px 8px;border-radius:6px;border:1px solid;font-size:12px}
+.legend>span{display:inline-block;margin:2px 6px 2px 0;padding:2px 8px;border-radius:6px;border:1px solid;font-size:12px}
+.legend>span.lk{border-color:#2c3854;color:var(--mute)}
+.dtop{display:flex;gap:2px;align-items:center;flex-wrap:wrap}.dtop small{margin-right:auto}
+.day.mstart{box-shadow:inset 3px 0 0 var(--acc)}.day.mstart small{font-weight:700;opacity:1}
+.mk{font-size:10px;line-height:1.2;padding:0 3px;border-radius:4px;font-weight:700;background:#0f1420}
+.mk.out{color:#fca5a5;border:1px solid #fca5a5}.mk.pay{color:#86efac;border:1px solid #86efac}.mk.miss{color:#fbbf24;border:1px solid #fbbf24}
+label.flab{font-size:12px;color:var(--mute);display:inline-flex;gap:4px;align-items:center}
 .bar{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:13px}
 .bar .bl{width:110px;flex:none;overflow:hidden;text-overflow:ellipsis}.bar .bv{width:40px;flex:none;text-align:right}
 .track{flex:1;background:#263049;border-radius:4px;height:10px;min-width:0}.fill{background:var(--acc);height:100%;border-radius:4px}
@@ -70,7 +76,8 @@ header>*{min-width:0}
 body.touring{padding-bottom:150px}
 @media(max-width:600px){
   header{padding:10px 12px;gap:8px}
-  header select{flex:1 1 50%;width:auto}header>#tourBtn,#upForm,#upForm input,#upForm button{width:100%}
+  header select{flex:1 1 50%;width:auto}header>#tourBtn,#upForm,#upForm input,#upForm button,#upForm label{width:100%}
+  #upForm label input{flex:1}
   header h1{width:100%}
   main{padding:12px}
   .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -84,12 +91,12 @@ body.touring{padding-bottom:150px}
 <body>
 <header>
   <h1>FinPilot</h1>
-  <select id="persona"></select><button class="act" id="loadBtn">Load persona</button>
+  <select id="persona" aria-label="Persona"></select><button class="act" id="loadBtn">Load persona</button>
   <button class="act" id="tourBtn" type="button">▶ Guided demo</button>
   <form id="upForm">
-    <input name="profile" value="me" pattern="[A-Za-z0-9_\-]{1,40}" size="8" title="Profile name for this upload (letters, digits, _ or -)" required>
-    <input type="file" name="file" accept=".csv" required>
-    <input name="opening_balance" type="number" value="0" size="8" title="Opening balance">
+    <label class="flab">Profile name <input name="profile" value="me" placeholder="profile name" pattern="[A-Za-z0-9_\-]{1,40}" size="8" title="Profile name for this upload (letters, digits, _ or -)" required></label>
+    <input type="file" name="file" accept=".csv" required aria-label="CSV file (date, description, amount)">
+    <label class="flab">Opening balance ₹ <input name="opening_balance" type="number" value="0" placeholder="opening balance ₹" size="8" title="Opening balance in rupees"></label>
     <button class="act">Upload CSV</button>
   </form>
   <span id="err" style="color:var(--bad)"></span>
@@ -112,8 +119,9 @@ body.touring{padding-bottom:150px}
       <div class="wrow" id="wScen" role="group" aria-label="Scenario"></div>
       <div class="wrow">
         <label>Amount (₹) <input id="wAmount" type="number" min="0" step="1000" placeholder="default" style="width:120px"></label>
-        <label id="wLifeLbl" for="wLife">Lifestyle spending 100%</label>
-        <input id="wLife" type="range" min="0" max="200" step="5" value="100">
+        <label id="wLifeLbl" for="wLife">Non-bill spending 100%</label>
+        <input id="wLife" type="range" min="0" max="200" step="5" value="100" aria-describedby="wLifeHint">
+        <small id="wLifeHint" style="color:var(--mute)">groceries, dining, shopping and other non-bill spend</small>
         <button class="act" id="wReset" type="button">Reset</button>
         <button class="act" id="wRefresh" type="button">Refresh</button>
         <span id="wErr" role="alert"></span>
@@ -126,7 +134,7 @@ body.touring{padding-bottom:150px}
         <div id="wFlows"></div>
         <div id="wCal" role="grid" aria-label="60-day risk calendar. Arrow keys move, Home and End jump, Enter shows details"></div>
         <div id="wDay" role="status" aria-live="polite"></div>
-        <div class="legend"><span class="day clear">☀ Clear &lt;5%</span><span class="day cloudy">⛅ Cloudy 5-15%</span><span class="day rain">🌧 Rain 15-35%</span><span class="day storm">⛈ Storm &ge;35%</span> <small style="color:var(--mute)">A storm window is a run of days at 25% or more.</small></div>
+        <div class="legend"><span class="day clear">☀ Clear &lt;5%</span><span class="day cloudy">⛅ Cloudy 5-15%</span><span class="day rain">🌧 Rain 15-35%</span><span class="day storm">⛈ Storm &ge;35%</span><span class="lk"><span class="mk out">₹−</span> scenario outflow</span><span class="lk"><span class="mk miss">₹✕</span> missing salary</span><span class="lk"><span class="mk pay">₹+</span> payday</span> <small style="color:var(--mute)">A storm window is a run of days at 25% or more. A highlighted left edge marks the first day of a month.</small></div>
         <h3>Storms</h3><div id="wStorms"></div>
         <div id="wAutopsyBox"><h3>Autopsy of the failing futures</h3><div id="wAutopsy"></div></div>
         <h3>Umbrellas</h3><div id="wApplied" class="wrow"></div><div id="wUmbrellas"></div>

@@ -41,8 +41,15 @@
     return t.toISOString().slice(0, 10);
   }
   const roundTo = (x, step) => Math.max(step, Math.round(x / step) * step);
+  // Stored UTC timestamp "2026-10-20 12:34:56.123456" (or ISO with T) -> "2026-10-20 12:34:56 UTC".
+  function fmtStamp(s) {
+    const m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/.exec(String(s));
+    return m ? `${m[1]} ${m[2]} UTC` : String(s);
+  }
+  // Allowed values only: returns v when it is one of `allowed`, else null (used for URL parameters).
+  const pick = (v, allowed) => (allowed.indexOf(v) >= 0 ? v : null);
 
-  const api = { MONTHS, SEVERITY, fmtDate, weekdayMon, worstLabel, pct, deltaPts, money, addDays, roundTo };
+  const api = { MONTHS, SEVERITY, fmtDate, weekdayMon, worstLabel, pct, deltaPts, money, addDays, roundTo, fmtStamp, pick };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.FPU = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -1,6 +1,7 @@
 const $ = (s) => document.querySelector(s);
 let currentES = null;
-let profile = new URLSearchParams(location.search).get("profile") || "priya";
+const QS = new URLSearchParams(location.search);
+let profile = /^[A-Za-z0-9_-]{1,40}$/.test(QS.get("profile") || "") ? QS.get("profile") : "priya";
 const charts = {};
 // Chart.js is loaded from a CDN without SRI (known, accepted for this demo).
 const TABS = [["dashboard", "Dashboard"], ["weather", "Money Weather"], ["afford", "Can I afford…?"], ["duel", "Decision duel"],
@@ -12,7 +13,7 @@ function el(tag, cls, text) {
   if (text !== undefined) e.textContent = text;
   return e;
 }
-const { money, pct, fmtDate, weekdayMon, worstLabel, deltaPts } = window.FPU;  // pure helpers: static/util.js
+const { money, pct, fmtDate, weekdayMon, worstLabel, deltaPts, fmtStamp, pick } = window.FPU;  // pure helpers: static/util.js
 let STATE = null;  // last rendered /api/state (read by the guided demo)
 const emit = (name, detail) => document.dispatchEvent(new CustomEvent(name, { detail }));
 
@@ -114,7 +115,7 @@ async function loadDigests() {
   const box = $("#digests"); box.replaceChildren();
   (await api(`/api/digests/${encodeURIComponent(profile)}`)).slice(0, 5).forEach((d) => {
     const c = el("div", "card");
-    c.append(el("small", "", `${d.created_at} · ${d.channel}${d.sent ? " (emailed)" : ""}`),
+    c.append(el("small", "", `${fmtStamp(d.created_at)} · ${d.channel}${d.sent ? " (emailed)" : ""}`),
              el("pre", "", d.content));
     box.append(c);
   });
@@ -134,6 +135,17 @@ const SCENARIOS = [["none", "Normal 60 days"], ["salary_skip", "Job-loss drill"]
                    ["purchase", "Big purchase"], ["emergency", "Medical emergency"]];
 const LABELS = { clear: ["☀", "Clear skies"], cloudy: ["⛅", "Cloudy"], rain: ["🌧", "Rain possible"], storm: ["⛈", "Storm ahead"] };
 
+// A scenario flow in words; a skipped salary is missing income, never an outflow.
+const isSalary = (f) => /salary/i.test(f.label);
+function flowText(f) {
+  if (isSalary(f)) return `missing salary ${money(Math.abs(f.amount))}`;
+  return `${f.label} ${f.amount < 0 ? "−" : "+"}${money(Math.abs(f.amount))}`;
+}
+function marker(cls, glyph, label) {
+  const m = el("span", "mk " + cls, glyph);
+  m.setAttribute("role", "img"); m.setAttribute("aria-label", label); m.title = label;
+  return m;
+}
 function dayTitle(c, buffer) {
   return `${fmtDate(c.date)}: ${pct(c.p_below_buffer)} chance of dropping below your safety buffer (${money(buffer)}); ` +
     `balance p10 ${money(c.p10)}, median ${money(c.p50)}, p90 ${money(c.p90)}`;
@@ -154,7 +166,7 @@ function weatherSyncControls() {
   document.querySelectorAll("#wScen button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.s === W.scenario)));
   $("#wAmount").disabled = !(W.scenario === "purchase" || W.scenario === "emergency");
   $("#wLife").value = String(Math.round(W.lifestyle * 100));
-  $("#wLifeLbl").textContent = `Lifestyle spending ${Math.round(W.lifestyle * 100)}%`;
+  $("#wLifeLbl").textContent = `Non-bill spending ${Math.round(W.lifestyle * 100)}%`;
 }
 async function weatherQuery() {
   clearTimeout(W.timer);
@@ -215,6 +227,8 @@ function weatherRender(d) {
   renderWeatherHeadline(d);
   renderCalendar(d);
   renderStorms(d);
+  // keep the storm highlight only if the new answer still has a storm with the same start
+  highlightStorm(W.hl ? (d.storms.find((s) => s.start === W.hl.start) || null) : null, false);
   renderAutopsy(d);
   renderUmbrellas(d);
   if (d.scenario_amount != null && (d.scenario === "purchase" || d.scenario === "emergency") && !$("#wAmount").value) {
@@ -230,10 +244,7 @@ function renderWeatherHeadline(d) {
   $("#wHeadline").replaceChildren(el("p", "", d.headline_text));
   $("#wRisk").textContent = "Chance of dipping below your safety buffer: " + pct(d.headline.p_any_breach);
   const fl = $("#wFlows"); fl.replaceChildren();
-  (d.scenario_flows || []).forEach((f) => {
-    const verb = f.amount < 0 ? "−" : "+";
-    fl.append(el("span", "tag", `planned: ${f.label} ${verb}${money(Math.abs(f.amount))} on ${fmtDate(f.date)}`));
-  });
+  (d.scenario_flows || []).forEach((f) => fl.append(el("span", "tag", `${flowText(f)} on ${fmtDate(f.date)}`)));
   if (d.scenario_note) fl.append(el("div", "wnote", d.scenario_note));
 }
 function renderCalendar(d) {
@@ -250,19 +261,30 @@ function renderCalendar(d) {
   const newRow = () => { row = el("div", "crow"); row.setAttribute("role", "row"); g.append(row); };
   newRow();
   for (let i = 0; i < col; i++) { const e = el("div", "day empty"); e.setAttribute("role", "gridcell"); e.setAttribute("aria-hidden", "true"); row.append(e); }
-  d.calendar.forEach((c) => {
+  const flows = {};
+  (d.scenario_flows || []).forEach((f) => { (flows[f.date] = flows[f.date] || []).push(f); });
+  const pays = new Set(d.paydays || []);
+  d.calendar.forEach((c, i) => {
     if (col === 7) { col = 0; newRow(); }
     const cell = el("div", "day " + c.label);
     cell.setAttribute("role", "gridcell");
     cell.tabIndex = c.date === keep ? 0 : -1;  // roving tabindex: the grid is one tab stop
     cell.dataset.date = c.date;
-    const t = dayTitle(c, d.buffer);
+    const mstart = i === 0 || c.date.slice(8) === "01";  // month marker: "Oct 1" instead of "1"
+    if (mstart) cell.classList.add("mstart");
+    const top = el("div", "dtop"), notes = [];
+    top.append(el("small", "", mstart ? fmtDate(c.date) : String(+c.date.slice(8))));
+    (flows[c.date] || []).forEach((f) => {
+      const t = flowText(f); notes.push(t);
+      top.append(isSalary(f) ? marker("miss", "₹✕", t) : marker("out", "₹−", t));
+    });
+    if (pays.has(c.date)) { notes.push("payday"); top.append(marker("pay", "₹+", "payday")); }
+    const t = dayTitle(c, d.buffer) + (notes.length ? "; " + notes.join("; ") : "");
     cell.title = t; cell.setAttribute("aria-label", t);
-    cell.append(el("small", "", String(+c.date.slice(8))), el("span", "g", LABELS[c.label][0]), el("b", "", pct(c.p_below_buffer)));
+    cell.append(top, el("span", "g", LABELS[c.label][0]), el("b", "", pct(c.p_below_buffer)));
     row.append(cell); col++;
   });
   $("#wDay").replaceChildren();
-  highlightStorm(W.hl, false);
 }
 function calCells() { return Array.from(document.querySelectorAll("#wCal .day[data-date]")); }
 function calFocus(cell) {
@@ -273,7 +295,10 @@ function calFocus(cell) {
 function calDetail(cell) {
   const c = W.data && W.data.calendar.find((x) => x.date === cell.dataset.date);
   if (!c) return;
-  $("#wDay").textContent = `${fmtDate(c.date)} · ${LABELS[c.label][1]} · ${pct(c.p_below_buffer)} risk · balance p10 ${money(c.p10)} to p90 ${money(c.p90)} (median ${money(c.p50)})`;
+  const extra = (W.data.scenario_flows || []).filter((f) => f.date === c.date).map(flowText)
+    .concat((W.data.paydays || []).includes(c.date) ? ["payday"] : []);
+  $("#wDay").textContent = `${fmtDate(c.date)} · ${LABELS[c.label][1]} · ${pct(c.p_below_buffer)} risk · balance p10 ${money(c.p10)} to p90 ${money(c.p90)} (median ${money(c.p50)})` +
+    (extra.length ? " · " + extra.join(" · ") : "");
 }
 function calKey(e) {
   const cell = e.target.closest && e.target.closest(".day[data-date]");
@@ -336,7 +361,7 @@ function renderAutopsy(d) {
   if ((a.bills || []).length) {
     box.append(el("h4", "", "Outflows before the first dip"));
     a.bills.forEach((b) => {
-      const planned = /^planned:/i.test(b.merchant);
+      const planned = /^planned:/i.test(b.merchant);  // "planned purchase" (no colon) already says it
       const r = el("div", "bill");
       r.append(el("span", "", fmtDate(b.date)), el("span", "", b.merchant.replace(/^planned:\s*/i, "")),
                el("span", "", money(Math.abs(b.amount))));
@@ -395,7 +420,7 @@ function weatherInit() {
   const sl = $("#wLife");
   sl.oninput = () => {
     W.lifestyle = +sl.value / 100;
-    $("#wLifeLbl").textContent = `Lifestyle spending ${sl.value}%`;
+    $("#wLifeLbl").textContent = `Non-bill spending ${sl.value}%`;
     clearTimeout(W.timer);
     W.timer = setTimeout(() => weatherQuery().catch(fail), 300);
   };
@@ -408,14 +433,20 @@ function weatherInit() {
   $("#wRefresh").onclick = () => weatherQuery().catch(fail);
 }
 
-function begin(p) { profile = p.profile; follow(p.run_id, () => { history.replaceState(null, "", `?profile=${encodeURIComponent(p.profile)}`); refresh(); }); }
+function begin(p) {
+  profile = p.profile;
+  if (Array.from($("#persona").options).some((o) => o.value === p.profile)) $("#persona").value = p.profile;
+  follow(p.run_id, () => { history.replaceState(null, "", `?profile=${encodeURIComponent(p.profile)}`); refresh(); });
+}
 
 async function init() {
   weatherInit();
   TABS.forEach(([id, label]) => { const b = el("button", "", label); b.dataset.t = id; b.onclick = () => { show(id); if (id === "weather") weatherEnter(); }; $("#nav").append(b); });
   show("dashboard");
-  (await api("/api/personas")).forEach((p) => $("#persona").append(new Option(p, p)));
-  $("#loadBtn").onclick = () => api(`/api/load/${$("#persona").value}`, {}).then(begin).catch(fail);
+  const personas = await api("/api/personas");
+  personas.forEach((p) => $("#persona").append(new Option(p, p)));
+  if (personas.includes(profile)) $("#persona").value = profile;  // show the profile actually on screen
+  $("#loadBtn").onclick = () => api(`/api/load/${encodeURIComponent($("#persona").value)}`, {}).then(begin).catch(fail);
   $("#upForm").onsubmit = (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);  // includes the profile-name field (validated server side)
@@ -432,7 +463,7 @@ async function init() {
       follow(r.run_id);
       const a = r.answer, o = $("#afOut"); o.replaceChildren();
       o.append(el("div", "card", a.narrative), el("div", "card", "Verdict: " + a.verdict));
-      if (a.notice) o.append(el("div", "card", "Notice: " + a.notice));
+      if (a.notice && !a.narrative.includes(a.notice)) o.append(el("div", "card", "Notice: " + a.notice));
       a.best_dates.forEach((d) => o.append(el("div", "card", `${d.date}: overdraft risk ${pct(d.p_overdraft)}, median ${money(d.end_p50)}`)));
       emit("fp:afford");
     }).catch(fail);
@@ -444,7 +475,10 @@ async function init() {
     if (f.ad) body.a.date = f.ad;
     api(`/api/duel/${encodeURIComponent(profile)}`, body).then((r) => {
       follow(r.run_id);
-      const a = r.answer; $("#duOut").replaceChildren(el("div", "card", a.narrative));
+      const a = r.answer;
+      // the deterministic computed result always shows; the narration only when it adds something
+      $("#duOut").replaceChildren(el("div", "card reason", "Result: " + a.reason));
+      if (a.narrative && a.narrative !== a.reason) $("#duOut").append(el("div", "card", a.narrative));
       if (a.notice) $("#duOut").append(el("div", "card", "Notice: " + a.notice));
       [["cDuelA", a.a], ["cDuelB", a.b]].forEach(([id, side]) => chart(id, { type: "line",
         data: { labels: side.bands.dates, datasets: [
@@ -469,6 +503,23 @@ async function init() {
       follow(r.run_id); $("#chOut").prepend(el("div", "card", "Q: " + q), el("div", "card", r.answer.text));
     }).catch(fail);
   };
-  refresh().catch(fail);
+  try { await refresh(); } catch (e) { fail(e); return; }
+  await deepLink();
+}
+// ?profile=priya&tab=weather&scenario=purchase[&apply=1]: open a tab (and a weather scenario) on load.
+// Values are checked against fixed lists; nothing plays by itself beyond this one query (and one umbrella).
+async function deepLink() {
+  const tab = pick(QS.get("tab"), TABS.map((t) => t[0]));
+  if (!tab) return;
+  show(tab);
+  if (tab !== "weather") return;
+  const sc = pick(QS.get("scenario"), SCENARIOS.map((x) => x[0]));
+  if (sc) { W.scenario = sc; weatherSyncControls(); }
+  await weatherQuery();
+  const u = QS.get("apply") === "1" && W.data && (W.data.umbrellas || [])[0];
+  if (u) {
+    W.cuts[u.category] = (u.cumulative_cut_pct != null ? u.cumulative_cut_pct : u.cut_pct) / 100;
+    await weatherQuery();
+  }
 }
 init();

@@ -190,7 +190,8 @@ def _autopsy(model, res, buf, balance, extra_flows=()):
         d, a = pd.Timestamp(ef[0]).normalize(), float(ef[1])
         if a < 0 and res.dates[0] <= d <= med:
             lab = ef[2] if len(ef) > 2 and ef[2] else "one-off"
-            bills.append({"merchant": f"planned: {lab}", "date": str(d.date()), "amount": round(a, 2)})
+            name = lab if str(lab).lower().startswith("planned") else f"planned: {lab}"  # never "planned: planned"
+            bills.append({"merchant": name, "date": str(d.date()), "amount": round(a, 2)})
     out["bills"] = sorted(bills, key=lambda b: (b["date"], b["merchant"]))
     return out
 

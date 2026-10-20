@@ -191,3 +191,8 @@ def test_paydays_in_weather_report(reports):
     assert reports["none"]["paydays"] == ["2026-10-01", "2026-11-01"]
     assert reports["purchase"]["paydays"] == ["2026-10-01", "2026-11-01"]
     assert reports["salary_skip"]["paydays"] == []  # the skipped pay dates do not happen
+
+
+def test_planned_purchase_bill_is_not_double_prefixed(reports):
+    names = [b["merchant"] for b in reports["purchase"]["autopsy"]["bills"]]
+    assert "planned purchase" in names and not any(n.startswith("planned: planned") for n in names)

@@ -1,3 +1,15 @@
+"""Claim recomputation and text auditing.
+
+Independence caveat: the aggregation claims (`month_total`, `pct_change`) reuse the spike engine's
+aggregation, and the weather claims (`breach_probability`, `storm_peak`, `storm_peak_after_cut`) re-fit the
+model from the raw transactions and re-run the SAME Monte Carlo engine (seed 0, n 1000). They are
+consistency checks (the number in the advice is exactly what the engine yields from the raw data and the
+opening balance), not an independent implementation.
+
+Weather claim values are percents (0..100). Tolerance: money kinds max(1, 2% of value); `pct_change`
+3 points; weather percent kinds 0.5 point absolute. Weather claims need `ctx = {"opening": float}`
+(balance = opening + sum of transaction amounts); without it they are unverifiable.
+"""
 from __future__ import annotations
 
 import math
@@ -7,11 +19,59 @@ import pandas as pd
 
 from .analyze import category_month_stats
 
+WEATHER_KINDS = ("breach_probability", "storm_peak", "storm_peak_after_cut")
+WEATHER_HORIZON = 60
+
 ALLOWED_CONSTANTS = {12, 24, 30, 60, 90, 100}
 
 
-def _recompute(claim, df):
+def _finite(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def _weather_setup(df, ctx):
+    """(model, balance, buffer) or None. Buffer is the UNROUNDED default buffer."""
+    from . import forecast as F
+    from . import weather as W
+    if not isinstance(ctx, dict) or not _finite(ctx.get("opening")):
+        return None
+    model = F.fit(df)
+    return model, F.current_balance(df, ctx["opening"]), W.default_buffer(model)
+
+
+def _recompute_weather(claim, df, ctx):
+    from . import forecast as F
+    from . import weather as W
+    setup = _weather_setup(df, ctx)
+    if setup is None:
+        return None
+    model, bal, buf = setup
     k = claim["kind"]
+    if k == "breach_probability":
+        h = claim["horizon"]
+        if not _finite(h) or h != int(h) or not 1 <= h <= 365:
+            return None
+        res = F.monte_carlo(model, bal, int(h), 1000, 0)
+        return round(float((res.paths < buf).any(axis=1).mean()) * 100, 1)
+    date = str(pd.Timestamp(claim["date"]).date())
+    cal = W.risk_calendar(model, bal, WEATHER_HORIZON, 1000, 0, buffer=buf)
+    storm = next((s for s in W.storms(cal) if s["start"] <= date <= s["end"]), None)
+    if storm is None:
+        return None
+    if k == "storm_peak":
+        return round(storm["peak_p"] * 100, 1)
+    cut = claim["cut_pct"]
+    if not _finite(cut) or not 0 <= cut <= 100 or claim["category"] not in model.cats:
+        return None
+    cal2 = W.risk_calendar(model, bal, WEATHER_HORIZON, 1000, 0, buffer=buf,
+                           cuts={claim["category"]: cut / 100.0})
+    return round(max(c["p_below_buffer"] for c in cal2 if storm["start"] <= c["date"] <= storm["end"]) * 100, 1)
+
+
+def _recompute(claim, df, ctx=None):
+    k = claim["kind"]
+    if k in WEATHER_KINDS:
+        return _recompute_weather(claim, df, ctx)
     if k in ("monthly_cost", "annual_cost"):
         g = df[(df["merchant"] == claim["merchant"]) & (df["amount"] < 0)].sort_values("date").tail(3)
         if g.empty:
@@ -31,7 +91,9 @@ def _recompute(claim, df):
 
 
 _NEEDS = {"monthly_cost": ("merchant",), "annual_cost": ("merchant",), "month_total": ("category", "month"),
-          "pct_change": ("category", "month"), "txn_amount": ("txn_id",)}
+          "pct_change": ("category", "month"), "txn_amount": ("txn_id",),
+          "breach_probability": ("horizon",), "storm_peak": ("date",),
+          "storm_peak_after_cut": ("date", "category", "cut_pct")}
 
 
 def _well_formed(claim):
@@ -40,12 +102,12 @@ def _well_formed(claim):
     return all(claim.get(k) is not None for k in _NEEDS[claim["kind"]])
 
 
-def recompute(claim, df):
+def recompute(claim, df, ctx=None):
     """Recompute a claim from transactions; None for anything malformed or unrecomputable."""
     if not _well_formed(claim):
         return None
     try:
-        v = _recompute(claim, df)
+        v = _recompute(claim, df, ctx)
         if v is None or isinstance(v, (bool, complex)) or not math.isfinite(float(v)):
             return None
         return float(v)
@@ -57,11 +119,16 @@ def _numeric(x):
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
-def check_claim(claim, df):
-    actual = recompute(claim, df)
+def check_claim(claim, df, ctx=None):
+    actual = recompute(claim, df, ctx)
     if actual is None or not _numeric(claim.get("value")):
         return {"ok": False, "actual": actual if actual is not None and _well_formed(claim) else None}
-    tol = 3.0 if claim["kind"] == "pct_change" else max(1.0, 0.02 * abs(actual))
+    if claim["kind"] == "pct_change":
+        tol = 3.0
+    elif claim["kind"] in WEATHER_KINDS:
+        tol = 0.5
+    else:
+        tol = max(1.0, 0.02 * abs(actual))
     return {"ok": abs(float(claim["value"]) - actual) <= tol, "actual": actual}
 
 
@@ -123,7 +190,45 @@ def _keyed_numbers(obj, key=""):
             yield from _keyed_numbers(v, key)
 
 
-def ungrounded_numbers(text, claims, evidence):
+_NUMW = (r"zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|"
+         r"sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|"
+         r"thousand|lakhs?|crores?|million")
+_WORD_AMOUNT = re.compile(rf"\b(?:{_NUMW})(?:[\s-]+(?:{_NUMW}|and))*[\s-]+"
+                          r"(?:percent|per\s*cent|pct|rupees?|rs|inr|lakhs?|crores?|thousand|million)\b", re.I)
+_NOT_MONEY_KEY = re.compile(r"day|horizon|^n_|_n$|count|window|cut_pct|failing|paths", re.I)
+
+
+def _strict_pools(evidence):
+    """(percent_pool, money_pool). Percent: values under pct/percent/share/rate keys (as is) plus fractions
+    strictly between 0 and 1 times 100 (exactly 0 and 1 never derive 0%/100%; supply an explicit *_pct value
+    for those). Money: other numbers with |v| >= 1 whose key is not a count/day/horizon key."""
+    pct, money = [], []
+    for k, v in _keyed_numbers(evidence):
+        if _PCT_KEY.search(k):
+            pct.append(v)
+            continue
+        if 0 < abs(v) < 1:
+            pct.append(abs(v) * 100)
+        elif abs(v) >= 1 and not _NOT_MONEY_KEY.search(k):
+            money.append(abs(v))
+    return pct, money
+
+
+def _strict_numbers(text, evidence):
+    out = [m.group(0) for m in _WORD_AMOUNT.finditer(str(text))]
+    pct, money = _strict_pools(evidence)
+    for t in text_numbers(text):
+        n = t["value"]
+        if t["percent"]:
+            if not any(abs(n - a) <= 0.5 for a in pct):
+                out.append(n)
+        elif t["currency"] or t["suffix"]:
+            if not any(abs(n - a) <= max(1.0, 0.001 * abs(a)) for a in money):
+                out.append(n)
+    return out
+
+
+def ungrounded_numbers(text, claims, evidence, strict=False):
     """Numbers in text that match no claim value or evidence number. Exempt (not checked): ISO dates,
     bare 4-digit years 1990-2100, and BARE numbers under 10 or in ALLOWED_CONSTANTS. A number followed
     by '%' (or 'percent', 'per cent', 'pct', 'percentage points') or preceded by a currency token (₹, Rs, INR, $, USD) is always checked, and a percentage
@@ -133,9 +238,20 @@ def ungrounded_numbers(text, claims, evidence):
     allowed = list(_flatten_numbers(vals)) + list(_flatten_numbers(evidence))
     allowed += [a * 100 for a in allowed if 0 < abs(a) <= 1]  # probabilities quoted as percents
     pct_ok = [a * 100 for a in allowed if abs(a) <= 1]
-    pct_ok += [float(c["value"]) for c in claims if isinstance(c, dict) and c.get("kind") == "pct_change"
+    pct_ok += [float(c["value"]) for c in claims if isinstance(c, dict) and c.get("kind") in ("pct_change", *WEATHER_KINDS)
                and _numeric(c.get("value"))]
     pct_ok += [v for k, v in _keyed_numbers(evidence) if _PCT_KEY.search(k)]
+    if strict:
+        out = _strict_numbers(text, evidence)
+        for t in text_numbers(text):  # bare numbers: the usual rule (percent/currency handled above)
+            n = t["value"]
+            if t["percent"] or t["currency"] or t["suffix"]:
+                continue
+            if re.fullmatch(r"\d{4}", t["token"]) and 1990 <= n <= 2100 or n in ALLOWED_CONSTANTS or n < 10:
+                continue
+            if not any(matches(n, a) for a in allowed):
+                out.append(n)
+        return out
     out = []
     for t in text_numbers(text):
         n = t["value"]
@@ -167,4 +283,27 @@ def claims_missing_from_text(text, claims):
         v = abs(float(c["value"]))
         if not any(matches(n, v) for n in nums):
             out.append(c)
+    return out
+
+
+def weather_text_issues(text, claims):
+    """Role binding for weather percent claims. Each must be stated as a percent token (a bare number does
+    not count), and when both storm_peak and storm_peak_after_cut are claimed (and differ) the text must state
+    the peak before the after-cut value, so swapped numbers cannot pass. Returns [(type, claim)]."""
+    toks = [t["value"] for t in text_numbers(text) if t["percent"]]
+    first, out = {}, []
+    for c in claims:
+        if not isinstance(c, dict) or c.get("kind") not in WEATHER_KINDS or not _numeric(c.get("value")):
+            continue
+        v = abs(float(c["value"]))
+        idx = next((i for i, n in enumerate(toks) if matches(n, v)), None)
+        if idx is None:
+            out.append(("claim_not_percent", c))
+        else:
+            first[c["kind"]] = (idx, v)
+    if "storm_peak" in first and "storm_peak_after_cut" in first:
+        (ip, vp), (ia, va) = first["storm_peak"], first["storm_peak_after_cut"]
+        if not matches(vp, va) and ia < ip:
+            out.append(("claim_order", next(c for c in claims if isinstance(c, dict)
+                                            and c.get("kind") == "storm_peak_after_cut")))
     return out

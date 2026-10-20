@@ -11,13 +11,26 @@ def inr(x):
     return f"₹{x:,.0f}"
 
 
-def _claim(kind, df, **kw):
-    v = recompute({"kind": kind, **kw}, df)
+def _claim(kind, df, ctx=None, **kw):
+    v = recompute({"kind": kind, **kw}, df, ctx)
     return None if v is None else {"kind": kind, **kw, "value": round(v, 2)}
 
 
-def build_candidates(findings, df, forecast=None, goals=None):
+def _opening(df, forecast, ctx):
+    """Opening balance for the weather claims: explicit ctx, else back out of the forecast balance."""
+    if isinstance(ctx, dict) and ctx.get("opening") is not None:
+        return ctx
+    bal = (forecast or {}).get("balance")
+    if isinstance(bal, (int, float)) and not isinstance(bal, bool):
+        return {"opening": float(bal) - float(df["amount"].sum())}
+    return None
+
+
+def build_candidates(findings, df, forecast=None, goals=None, weather=None, ctx=None):
+    """`weather` is a weather.report(); with it (and an opening balance, from `ctx` or the forecast
+    balance) forecast_risk and storm_warning carry recomputable claims."""
     out = []
+    ctx = _opening(df, forecast, ctx) if weather else None
 
     def add(trigger, action, fids, evidence, claims, monthly=0.0, one_off=0.0):
         out.append({"cid": f"c{len(out)}", "trigger_type": trigger, "action": action,
@@ -47,8 +60,32 @@ def build_candidates(findings, df, forecast=None, goals=None):
             add(t, f"Add friction to {f['category']} right after payday", [f["id"]], f, [])
     if forecast and forecast["summary"]["p_overdraft"] >= 0.10:
         s = forecast["summary"]
-        add("forecast_risk", "Protect cash before the projected low point", ["forecast"],
-            {**s, "horizon": forecast["horizon"]}, [])
+        ev = {**s, "horizon": forecast["horizon"]}
+        claims = []
+        if weather and ctx:
+            h = weather["headline"]
+            ev.update(horizon=weather["horizon"], buffer=weather["buffer"], p_any_breach=h["p_any_breach"], worst_day=h["worst_day"],
+                      worst_p=h["worst_p"], n_storm_days=h["n_storm_days"])
+            if weather["storms"]:
+                ev.update(storm_start=weather["storms"][0]["start"], storm_end=weather["storms"][0]["end"])
+            claims = [_claim("breach_probability", df, ctx, horizon=weather["horizon"])]
+            if not claims[0]:
+                claims = []
+        add("forecast_risk", "Protect cash before the projected low point", ["forecast"], ev, claims)
+    top = weather["storms"][0] if weather and weather.get("storms") else None
+    if top and top["peak_p"] >= 0.25 and ctx:
+        ev = {"storm": dict(top), "buffer": weather["buffer"], "horizon": weather["horizon"]}
+        peak = _claim("storm_peak", df, ctx, date=top["peak_date"])
+        claims = [peak]
+        if peak and weather.get("umbrellas"):
+            u = weather["umbrellas"][0]
+            after = _claim("storm_peak_after_cut", df, ctx, date=top["peak_date"], category=u["category"],
+                           cut_pct=u["cut_pct"])
+            if after and after["value"] < peak["value"]:
+                ev["umbrella"] = dict(u)
+                claims.append(after)
+        if peak:
+            add("storm_warning", f"Storm warning {top['start']} to {top['end']}", ["weather"], ev, claims)
     for g in (goals or []):
         if not isinstance(g, dict) or "error" in g:
             continue
@@ -67,6 +104,9 @@ def _cv(rec, kind, default):
                 and not isinstance(c.get("value"), bool):
             return c["value"]
     return default
+
+
+HOLD_BACK = "Hold back on non-bill spending (groceries, dining, shopping) until then."
 
 
 def template_text(rec):
@@ -89,9 +129,23 @@ def template_text(rec):
     if t == "behavior_trigger":
         return (f"{e['share_pct']:.0f}% of your {e['category'].replace('_', ' ')} spending lands in the "
                 f"{e['window_days']} days after payday ({e['ratio']:.1f}x the normal rate). Delay those orders a few days.")
+    if t == "storm_warning":
+        st = e["storm"]
+        txt = (f"Storm warning: {st['start']} to {st['end']}, peak {_cv(rec, 'storm_peak', st['peak_p']*100):.0f}% "
+               f"chance of dropping below your safety buffer ({inr(e['buffer'])}).")
+        u = e.get("umbrella")
+        if u and any(c.get("kind") == "storm_peak_after_cut" for c in rec.get("claims") or []):
+            txt += (f" Cutting {u['category'].replace('_', ' ')} by {u['cut_pct']}% lowers the peak to "
+                    f"{_cv(rec, 'storm_peak_after_cut', 0):.0f}%.")
+        return txt
+    if t == "forecast_risk" and "buffer" in e:
+        return (f"At the current pace there is a {e['p_overdraft']*100:.0f}% chance your balance goes negative "
+                f"within {e['horizon']} days, first around {e['risk_day']}. Across all {e['horizon']} days "
+                f"{_cv(rec, 'breach_probability', e['p_any_breach']*100):.0f}% of simulated futures dip below your "
+                f"safety buffer ({inr(e['buffer'])}). {HOLD_BACK}")
     if t == "forecast_risk":
         return (f"At the current pace there is a {e['p_overdraft']*100:.0f}% chance your balance goes negative "
-                f"within {e['horizon']} days, first around {e['risk_day']}. Hold discretionary spending until then.")
+                f"within {e['horizon']} days, first around {e['risk_day']}. {HOLD_BACK}")
     if t == "goal_behind":
         return f"You have a {e['p_met']*100:.0f}% chance of meeting '{e['name']}' by its deadline. Increase contributions or move the date."
     return rec["action"]
@@ -103,7 +157,7 @@ SYSTEM = ("You are a financial advisor. For each candidate write at most two sen
           "copies the candidate's claim objects, with 'value' set to the number you state in the text.")
 
 
-_ID_KEYS = ("kind", "merchant", "category", "month", "txn_id")
+_ID_KEYS = ("kind", "merchant", "category", "month", "txn_id", "date", "horizon", "cut_pct")
 
 
 def _identity(claim):

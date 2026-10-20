@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 
-from ..engines.verify import check_claim, claims_missing_from_text, ungrounded_numbers
+from ..engines.verify import check_claim, claims_missing_from_text, ungrounded_numbers, weather_text_issues
 from ..llm import LLMUnavailable
 from .advisor import template_text
 
@@ -23,11 +23,16 @@ def _checkable_text(rec):
     return text
 
 
-def audit(rec, df):
+def audit(rec, df, ctx=None):
     issues = []
     text = _checkable_text(rec)
+    storm = rec["evidence"].get("storm") if isinstance(rec.get("evidence"), dict) else None
     for c in rec["claims"]:
-        r = check_claim(c, df)
+        r = check_claim(c, df, ctx)
+        if isinstance(c, dict) and c.get("kind") in ("storm_peak", "storm_peak_after_cut") \
+                and isinstance(storm, dict) and storm.get("start") and storm.get("end"):
+            if not (str(storm["start"]) <= str(c.get("date")) <= str(storm["end"])):
+                r = {"ok": False, "actual": None}  # claim is about a day outside the storm being reported
         if r["actual"] is None:
             issues.append({"type": "unverifiable", "claim": c})
         elif not r["ok"]:
@@ -36,14 +41,17 @@ def audit(rec, df):
         issues.append({"type": "ungrounded_number", "value": n})
     for c in claims_missing_from_text(text, rec["claims"]):
         issues.append({"type": "claim_not_in_text", "claim": c})
+    for typ, c in weather_text_issues(text, rec["claims"]):
+        if not any(i["type"] == "claim_not_in_text" and i["claim"] is c for i in issues):
+            issues.append({"type": typ, "claim": c})
     return issues
 
 
 def _describe_one(i):
     if i["type"] == "mismatch":
         return f"mismatch: claimed {i['claim'].get('value')} vs actual {i['actual']}"
-    if i["type"] == "claim_not_in_text":
-        return f"claim_not_in_text: {i['claim'].get('kind')} {i['claim'].get('value')}"
+    if i["type"] in ("claim_not_in_text", "claim_not_percent", "claim_order"):
+        return f"{i['type']}: {i['claim'].get('kind')} {i['claim'].get('value')}"
     return f"{i['type']}: {i.get('claim') or i.get('value')}"
 
 
@@ -51,12 +59,12 @@ def _describe(issues):
     return "; ".join(_describe_one(i) for i in issues)
 
 
-def verify_all(recs, df, llm=None, emit=None):
+def verify_all(recs, df, llm=None, emit=None, ctx=None):
     emit = emit or (lambda kind, summary, data=None: None)
     kept, dropped = [], []
     for rec in recs:
         rec["verification"] = "recomputed" if rec["claims"] else "evidence_only"
-        issues = audit(rec, df)
+        issues = audit(rec, df, ctx)
         if not issues:
             if rec["claims"]:
                 rec.update(verification="recomputed", verified=True,
@@ -96,7 +104,7 @@ def verify_all(recs, df, llm=None, emit=None):
             rec["text"] = candidate_text if candidate_text else template_text(rec)
             if not candidate_text:
                 rec["model"] = "template"
-            if not audit(rec, df):
+            if not audit(rec, df, ctx):
                 rec.update(verified=True, verifier_notes=f"{notes}; corrected via {how}"
                            + ("; text is deterministic template" if how == "template" else ""))
                 emit("corrected", f"corrected via {how}: {rec['action']}", {"rec": rec["id"]})

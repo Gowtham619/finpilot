@@ -149,3 +149,17 @@ def test_empty_df_raises():
     _, df = prep(seed=0)
     with pytest.raises(ValueError):
         F.fit(df.iloc[0:0])
+
+
+def test_central_robust_bands_centre_from_robust_spread_from_full():
+    p, df = prep(seed=0)
+    full, robust = F.fit(df), F.fit(df, robust_pool=True)
+    bal = F.current_balance(df, p.opening_balance)
+    cb = F.central_robust_bands(full, robust, bal, 30, 300, seed=3)
+    f = F.monte_carlo(full, bal, 30, 300, seed=3)  # same seed -> identical full-pool simulation (CRN)
+    assert np.array_equal(cb.full.paths, f.paths)
+    assert np.allclose(cb.p50, cb.robust.p50)
+    assert np.allclose(cb.p10 - cb.p50, f.p10 - f.p50) and np.allclose(cb.p90 - cb.p50, f.p90 - f.p50)
+    assert (cb.p10 <= cb.p50).all() and (cb.p50 <= cb.p90).all()
+    same = F.central_robust_bands(full, full, bal, 30, 300, seed=3)  # identical models -> plain bands
+    assert np.allclose(same.p10, f.p10) and np.allclose(same.p90, f.p90)

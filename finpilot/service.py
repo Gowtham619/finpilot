@@ -19,6 +19,7 @@ from .trace import trace
 
 PROFILE_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 MAX_ROWS = 50000
+MAX_QUESTION = 500
 
 
 def check_profile(profile):
@@ -61,7 +62,8 @@ def _persist(profile):
             db.save_transactions(s, profile, state["df"], state["opening"])
             db.save_findings(s, profile, _clean(state["findings"]))
             db.save_recs(s, profile, _clean(state["recs"]))
-            db.save_forecast(s, profile, _clean({"forecast": state["forecast"], "overview": state["overview"]}))
+            db.save_forecast(s, profile, _clean({"forecast": state["forecast"], "overview": state["overview"],
+                                                   "weather": state.get("weather")}))
             by_name = {g["name"]: g["pk"] for g in db.list_goals(s, profile)}
             for g in state["forecast"]["goals"]:
                 if "p_met" not in g:  # error entry {"name", "error"}
@@ -208,9 +210,41 @@ def add_goal(profile, body):
         db.add_goal(s, profile, name, target, deadline)
 
 
+def weather_params(raw):
+    """Validated meteorologist params. Only these keys are read: `opening`/`balance` can never be set."""
+    from .agents import meteorologist as M
+    if not isinstance(raw, dict):
+        raise ValueError("weather parameters must be an object")
+    for k in ("opening", "balance", "opening_balance"):
+        if k in raw:
+            raise ValueError(f"{k} cannot be set on a weather request")
+
+    def num(v, what):
+        if isinstance(v, bool):
+            raise ValueError(f"{what} must be a number")
+        return _num(v, what)
+
+    life = num(raw.get("lifestyle", 1.0), "lifestyle")
+    if not 0 <= life <= 2:
+        raise ValueError("lifestyle must be between 0 and 2")
+    h = num(raw.get("horizon", 60), "horizon")
+    if h != int(h) or not 7 <= h <= 120:
+        raise ValueError("horizon must be a whole number between 7 and 120")
+    out = {"lifestyle": life, "horizon": int(h), "scenario": M.check_scenario(raw.get("scenario")),
+           "cuts": _cuts(raw.get("cuts"), "weather")}
+    if raw.get("buffer") not in (None, ""):
+        b = num(raw["buffer"], "buffer")
+        if not 0 < b <= 1e9:
+            raise ValueError("buffer must be greater than 0 and at most 1,000,000,000")
+        out["buffer"] = b
+    if raw.get("amount") not in (None, ""):
+        out["amount"] = M.check_amount(raw["amount"])
+    return out
+
+
 def request(profile, req):
     rtype = req.get("type")
-    if rtype not in ("afford", "duel", "chat"):
+    if rtype not in ("afford", "duel", "chat", "weather"):
         raise ValueError(f"unknown request type: {rtype!r}")
     with db.session() as s:
         df, opening = db.load_df(s, profile)
@@ -218,7 +252,15 @@ def request(profile, req):
     if df is None:
         raise LookupError(f"no data for profile '{profile}'")
     d0 = str((df["date"].max() + pd.Timedelta(days=1)).date())
-    if rtype == "afford":
+    if rtype == "chat":
+        q = req.get("question")
+        if not isinstance(q, str) or not q.strip():
+            raise ValueError("question must be a non-empty string")
+        if len(q) > MAX_QUESTION:
+            raise ValueError(f"question is too long (max {MAX_QUESTION} characters)")
+    if rtype == "weather":
+        req = {"type": "weather", "params": weather_params(req.get("params", {k: v for k, v in req.items() if k != "type"}))}
+    elif rtype == "afford":
         req["amount"] = _num(req.get("amount"), "amount")
         if req["amount"] < 0:
             raise ValueError("amount must not be negative")
@@ -272,7 +314,7 @@ def state(profile):
         fc = db.load_forecast(s, profile) or {}
         out = {"has_data": True, "profile": profile, "findings": db.load_findings(s, profile),
                "recs": db.load_recs(s, profile), "goals": db.list_goals(s, profile),
-               "forecast": fc.get("forecast"), "overview": fc.get("overview", ""),
+               "forecast": fc.get("forecast"), "weather": fc.get("weather"), "overview": fc.get("overview", ""),
                "balance": (fc.get("forecast") or {}).get("balance")}
     agg = monthly_aggregates(df).round(0)
     out["monthly"] = {"months": list(agg.index), "series": {c: agg[c].tolist() for c in agg.columns}}

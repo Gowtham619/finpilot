@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from .analyze import detect_recurring
+from .analyze import detect_recurring, duplicate_charges, txn_outliers
 
 
 @dataclass
@@ -21,7 +22,9 @@ def current_balance(df, opening):
     return float(opening + df["amount"].sum())
 
 
-def fit(df, window_days=90) -> Model:
+def fit(df, window_days=90, robust_pool=False) -> Model:
+    """robust_pool: drop flagged large charges (txn_outliers, recurring excluded, as analyze_all)
+    and the later charge of flagged duplicates (duplicate_charges) from the discretionary pool."""
     if df is None or len(df) == 0:
         raise ValueError("need at least 1 day of history")
     rec = detect_recurring(df)
@@ -30,6 +33,9 @@ def fit(df, window_days=90) -> Model:
     start = max(end - pd.Timedelta(days=window_days - 1), df["date"].min().normalize())
     idx = pd.date_range(start, end)
     disc = df[(~df["merchant"].isin(rec_m)) & (df["amount"] < 0) & (df["date"] >= idx[0])]
+    if robust_pool:
+        drop = [f["txn_id"] for f in txn_outliers(df, rec_m)] + [f["txn_id"] for f in duplicate_charges(df)]
+        disc = disc.drop(index=drop, errors="ignore")
     cats = sorted(disc["category"].unique())
     if cats:
         mat = (disc.assign(d=disc["date"].dt.normalize(), s=-disc["amount"])
@@ -54,6 +60,8 @@ def recurring_flows(model, dates):
 class Result:
     dates: pd.DatetimeIndex
     paths: np.ndarray
+    disc_by_cat: np.ndarray | None = None  # n x cats total discretionary spend (detail=True only)
+    disc_cum_by_cat: np.ndarray | None = None  # n x horizon x cats cumulative spend (detail=True only)
 
     @property
     def p10(self): return np.percentile(self.paths, 10, axis=0)
@@ -84,11 +92,24 @@ class Result:
                 "end_p90": round(self.end_p90, 2), "risk_day": self.risk_day}
 
 
-def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts=None) -> Result:
+def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts=None,
+                spend_scale=1.0, detail=False) -> Result:
+    """Weekday-matched bootstrap. `cuts` (per-category fractions) and `spend_scale` (global
+    multiplier on discretionary spend, 0..3) never touch the RNG stream, so results are
+    common-random-number comparable across cuts / spend_scale / extra_flows."""
+    if isinstance(spend_scale, bool):
+        raise ValueError("spend_scale must be a number in 0..3")
+    try:
+        spend_scale = float(spend_scale)
+    except (TypeError, ValueError):
+        raise ValueError("spend_scale must be a number in 0..3") from None
+    if not (math.isfinite(spend_scale) and 0.0 <= spend_scale <= 3.0):
+        raise ValueError("spend_scale must be finite and in 0..3")
     rng = np.random.default_rng(seed)
     dates = pd.date_range(model.last_date + pd.Timedelta(days=1), periods=horizon)
     fixed = recurring_flows(model, dates)
-    for d, a in extra_flows:
+    for ef in extra_flows:  # (date, amount[, label])
+        d, a = ef[0], ef[1]
         d = pd.Timestamp(d).normalize()
         if d in dates:
             fixed[dates.get_loc(d)] += a
@@ -101,9 +122,40 @@ def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts
     rows = np.empty((n, horizon), dtype=int)
     for j, d in enumerate(dates):  # weekday-matched bootstrap of observed days
         rows[:, j] = rng.choice(by_wd[d.weekday()], size=n)
+    if spend_scale != 1.0:
+        scale = scale * spend_scale
     disc = (model.daily[rows] * scale).sum(axis=2) if model.cats else np.zeros((n, horizon))
     paths = balance + np.cumsum(fixed[None, :] - disc, axis=1)
-    return Result(dates, paths)
+    by_cat = cum = None
+    if detail:
+        if model.cats:
+            per_day = model.daily[rows] * scale          # n x horizon x cats
+            cum = np.cumsum(per_day, axis=1)
+            by_cat = cum[:, -1, :]
+        else:
+            cum, by_cat = np.zeros((n, horizon, 0)), np.zeros((n, 0))
+    return Result(dates, paths, by_cat, cum)
+
+
+@dataclass
+class CentreBands:
+    """Robust-centre bands: p50 from the robust-pool simulation, spread from the full-pool one."""
+    dates: pd.DatetimeIndex
+    p10: np.ndarray
+    p50: np.ndarray
+    p90: np.ndarray
+    full: Result
+    robust: Result
+
+
+def central_robust_bands(model_full, model_robust, balance, horizon=60, n=1000, seed=0, **kw) -> CentreBands:
+    """Pure: run monte_carlo on both models with the SAME seed (common random numbers) and return
+    p50 := robust p50, p10/p90 := robust p50 + (full p10/p90 - full p50). Parameter-free. Extra
+    keyword arguments are passed to both monte_carlo calls unchanged."""
+    full = monte_carlo(model_full, balance, horizon, n, seed, **kw)
+    robust = monte_carlo(model_robust, balance, horizon, n, seed, **kw)
+    fp50, rp50 = full.p50, robust.p50
+    return CentreBands(full.dates, rp50 + (full.p10 - fp50), rp50, rp50 + (full.p90 - fp50), full, robust)
 
 
 def goal_status(model, balance, target, deadline, n=1000, seed=0, max_horizon=365):

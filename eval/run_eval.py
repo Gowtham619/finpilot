@@ -10,6 +10,7 @@ import pandas as pd
 
 from eval import metrics as M
 from eval.generate import PERSONAS, load_persona
+from eval.generate_messy import OOD_PERSONAS, load_messy
 from finpilot import graph
 from finpilot.agents.categorizer import categorize_df
 from finpilot.engines import analyze as A
@@ -44,7 +45,12 @@ def eval_categorization(persona, llm):
     return out
 
 
-def eval_detection(persona):
+ORIGINAL_SUBSCRIPTIONS = {"NETFLIX", "HOTSTAR", "SPOTIFY", "CULT FIT GYM"}
+
+
+def eval_detection(persona, subscription_truth=ORIGINAL_SUBSCRIPTIONS):
+    """subscription_truth / payday_trigger_category=None are parameterised only so the same code scores
+    the second generator; defaults reproduce the original scoring exactly."""
     df, t = _with_truth(persona), persona.truth
     rec = {r["merchant"] for r in A.detect_recurring(df)}
     subs = A.detect_subscriptions(df)
@@ -53,10 +59,10 @@ def eval_detection(persona):
         "duplicate": M.precision_recall({f["txn_id"] for f in A.duplicate_charges(df)}, t.duplicate_ids),
         "category_spike": M.precision_recall({(f["month"], f["category"]) for f in A.category_spikes(df)}, {t.spike}),
         "subscriptions": M.precision_recall({s["merchant"] for s in subs},
-                                            {"NETFLIX", "HOTSTAR", "SPOTIFY", "CULT FIT GYM"}),
+                                            set(subscription_truth)),
         "unused_subscriptions": M.precision_recall({u["merchant"] for u in A.unused_subscriptions(df, subs)}, t.unused_subs),
         "payday_trigger": M.precision_recall({f["category"] for f in A.behavior_triggers(df, rec)},
-                                             {t.payday_trigger_category}),
+                                             {t.payday_trigger_category} if t.payday_trigger_category else set()),
     }
 
 
@@ -109,7 +115,7 @@ def eval_forecast(persona, origins=3):
     df = _with_truth(persona)
     months = df["date"].dt.to_period("M").nunique()
     monthly_spend = float(-df.loc[df["amount"] < 0, "amount"].sum() / months)
-    names = ("model",) + BASELINES
+    names = ("model", "model_robust_centre") + BASELINES
     acc = {n: {"ape": [], "mape": [], "mae": [], "pin": [], "cov": []} for n in names}
     for cutoff in forecast_origins(df, origins):
         end = (cutoff + pd.offsets.MonthEnd(0)).normalize()
@@ -120,11 +126,15 @@ def eval_forecast(persona, origins=3):
         actual = bal0 + np.cumsum(_daily_net(df, cutoff, end))
         true_net = actual[-1] - bal0
         r = F.monte_carlo(model, bal0, len(days), 1000)
+        robust = F.fit(train, robust_pool=True)
+        _align(robust, cutoff)
+        rc = F.central_robust_bands(model, robust, bal0, len(days), 1000)
         prev_start = cutoff - pd.offsets.MonthBegin(1)
         prev = _daily_net(train, prev_start, cutoff - pd.Timedelta(days=1))
         trailing = train[train["date"] >= cutoff - pd.Timedelta(days=30)]["amount"].sum() / 30
         paths = baseline_paths(bal0, prev, len(days), trailing)
-        fcs = {"model": (r.p50, {0.1: r.p10, 0.5: r.p50, 0.9: r.p90})}
+        fcs = {"model": (r.p50, {0.1: r.p10, 0.5: r.p50, 0.9: r.p90}),
+               "model_robust_centre": (rc.p50, {0.1: rc.p10, 0.5: rc.p50, 0.9: rc.p90})}
         for n, p in paths.items():
             fcs[n] = (p, {q: p for q in QUANTILES})
         for n, (pt, qs) in fcs.items():
@@ -133,6 +143,7 @@ def eval_forecast(persona, origins=3):
             acc[n]["mae"].append(abs(pt[-1] - actual[-1]) / monthly_spend)
             acc[n]["pin"].append(_pinball(qs, actual) / monthly_spend)
         acc["model"]["cov"].append(float(np.mean((actual >= r.p10) & (actual <= r.p90))))
+        acc["model_robust_centre"]["cov"].append(float(np.mean((actual >= rc.p10) & (actual <= rc.p90))))
     out = {}
     for n, v in acc.items():
         out[n] = {"net_flow_ape": round(float(np.mean(v["ape"])), 4), "balance_mape": round(float(np.mean(v["mape"])), 4),
@@ -170,6 +181,52 @@ def eval_calibration(personas, horizon=30, drop=0.10):
     return {"n": len(probs), "mean_pred": round(float(np.mean(probs)), 4), "observed": round(base, 4),
             "brier": round(br, 4), "base_brier": round(base_brier, 4),
             "brier_skill": round(1 - br / base_brier, 4) if base_brier > 0 else None, "bins": bins}
+
+
+def eval_ood(personas):
+    """Second generator, engines and thresholds unchanged, same metric code paths as the main sections."""
+    cats = [eval_categorization(p, None)["rules_only"] for p in personas.values()]
+    dets = [eval_detection(p, p.subscription_merchants) for p in personas.values()]
+    fcs = [eval_forecast(p) for p in personas.values()]
+    n_orig = fcs[0]["_meta"]["origins"]
+    for x in fcs:
+        x.pop("_meta")
+    planted = {k: sorted({p.planted[k] for p in personas.values()}) for k in ("duplicates", "large_charges", "spike")}
+    planted = {k: v[0] if len(v) == 1 else v for k, v in planted.items()}
+    planted["unused_subs"] = [len(p.truth.unused_subs) for p in personas.values()]
+    planted["refunds"] = [p.planted["refunds"] for p in personas.values()]
+    return {"personas": list(personas), "categorization": {"rules_only": _avg(cats)}, "detection": _avg(dets),
+            "forecast": _avg(fcs),
+            "forecast_meta": {"n_personas": len(personas), "n_origins_per_persona": n_orig,
+                              "total_months": len(personas) * n_orig},
+            "planted": planted}
+
+
+def ood_notes(res):
+    """Methodology bullets for the OOD block, built from the numbers actually measured."""
+    o, d = res["ood"], res["ood"]["detection"]
+    oc = o["categorization"]["rules_only"]
+    notes = [
+        "Out-of-distribution check: a second generator (eval/generate_messy.py) with different merchants, noisy UPI/NEFT/IMPS/card "
+        "description formats, refunds, cash, EMIs, an annual subscription, a price increase and a travel spike was scored with the "
+        "engines and thresholds unchanged. The same author wrote both generators and knows the engines, so this is a robustness "
+        "check, not independent validation; it is not evidence about real bank data.",
+        f"OOD behaviour: rules-only categorization accuracy fell from {res['categorization']['rules_only']['accuracy']['mean']} to "
+        f"{oc['accuracy']['mean']} (coverage {oc['coverage']['mean']}); detection and forecast were scored on oracle categories, so the "
+        "categorizer drop does not feed into them. The oracle-category scoring flatters the OOD detection and forecast numbers.",
+        "OOD refunds are positive credits whose truth category is shopping; the rules label every positive amount as income, so "
+        "refunds are always miscategorized by the rules-only categorizer. Cash withdrawals and EMIs have truth category 'other', "
+        "which the rules never emit (they return uncategorized).",
+        f"OOD payday_trigger has no planted target (truth set empty), so precision {_fmt(d['payday_trigger']['precision'])} means "
+        "any finding is a false positive. OOD subscription truth is the monthly subscriptions only; the annual one is not expected.",
+        "OOD generator provenance: spend level and opening balances were set so balances stay plausible, and the share of "
+        "mainstream merchants the rules know (Swiggy, Zomato, Uber, Amazon, BigBasket) was raised once after the first draft scored "
+        "rules-only accuracy below the 0.3 sanity floor. Only categorization accuracy was looked at when doing so. After a first "
+        "scoring run two truth-labelling bugs in the generator were fixed because they scored correct detections as misses (subscription "
+        "truth now uses the engine's normalised merchant strings; a same-day duplicate pair whose 'second row' was ambiguous now sits on "
+        "consecutive days). No engine, threshold or planted target was changed to move a result.",
+    ]
+    return notes
 
 
 def eval_grounding(persona, llm):
@@ -231,8 +288,33 @@ METHODOLOGY = [
     "The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this is a design choice.",
     "The LLM-only advice is audited with no engine evidence, so any derived number in its text that is not in its claims counts as ungrounded; this inflates the gap relative to the hybrid, whose recommendations carry engine evidence.",
     "The LLM-only forecast uses the same 3 monthly origins per persona as the model (monthly net-flow history before the origin -> that month's net flow). A net-flow APE of 1.0 equals the flat-balance forecast.",
+    "model_robust_centre is the third forecast candidate (task 5c, pre-registered, not adopted): p50 from a bootstrap pool without flagged one-off charges, p10/p90 = that p50 plus the full-pool offsets (same seed). It is scored for transparency only; the shipped forecaster uses the model row. See eval/forecast_experiments.md.",
     "The ablation is a single run at temperature 0 over 3 synthetic personas (only when run with an LLM); differences are indicative, not statistically tested.",
 ]
+
+
+def render_ood(res):
+    o = res.get("ood")
+    if not o:
+        return []
+    c, d, f, m, pl = o["categorization"]["rules_only"], o["detection"], o["forecast"], o["forecast_meta"], o["planted"]
+    rows = ["", "## Out-of-distribution check (second generator, engines unchanged)",
+            f"Personas: {', '.join(o['personas'])}. Same author wrote both generators: a robustness check, not independent validation. "
+            f"Planted per persona: {pl['duplicates']} duplicates, {pl['large_charges']} large charges, {pl['spike']} category spike (travel), "
+            f"unused subscriptions {pl['unused_subs']}, refunds {pl['refunds']}. Cells show mean (min\u2013max) across personas.", "",
+            "| Categorization (rules-only) | Accuracy | Macro-F1 | Coverage |", "|---|---|---|---|",
+            f"| rules_only | {_fmt(c['accuracy'])} | {_fmt(c['macro_f1'])} | {_fmt(c['coverage'])} |", "",
+            "| Detection | Precision | Recall |", "|---|---|---|"]
+    rows += [f"| {k} | {_fmt(v['precision'])} | {_fmt(v['recall'])} |" for k, v in d.items()]
+    rows += ["", f"| Forecast ({m['n_personas']} personas x {m['n_origins_per_persona']} origins = {m['total_months']} months) | Balance MAPE | Month-end MAE / monthly spend | Pinball / monthly spend | p10-p90 coverage (nominal 0.80) |",
+             "|---|---|---|---|---|"]
+    for n in ("model", "model_robust_centre", "flat_balance", "seasonal_naive", "trailing_mean"):
+        if n not in f:
+            continue
+        v = f[n]
+        rows.append(f"| {n} | {_fmt(v['balance_mape'])} | {_fmt(v['mae_vs_monthly_spend'])} | {_fmt(v['pinball_vs_monthly_spend'])} "
+                    f"| {_fmt(v['band_coverage']) if v['band_coverage'] else '-'} |")
+    return rows
 
 
 def render_md(res):
@@ -252,9 +334,11 @@ def render_md(res):
     rows += ["", f"## Forecast (held-out months; {meta['n_personas']} personas x {meta['n_origins_per_persona']} origins = {meta['total_months']} months)",
              "| Method | Balance MAPE | Month-end MAE / monthly spend | Pinball / monthly spend | Net-flow APE | p10-p90 coverage (nominal 0.80) |",
              "|---|---|---|---|---|---|"]
-    labels = {"model": "model", "flat_balance": "flat_balance", "seasonal_naive": "seasonal_naive",
+    labels = {"model": "model", "model_robust_centre": "model_robust_centre (candidate f, not adopted)", "flat_balance": "flat_balance", "seasonal_naive": "seasonal_naive",
               "trailing_mean": "trailing-30d-mean (spikes on salary)"}
     for n, lab in labels.items():
+        if n not in f:  # results written before the candidate row existed
+            continue
         v = f[n]
         rows.append(f"| {lab} | {_fmt(v['balance_mape'])} | {_fmt(v['mae_vs_monthly_spend'])} | {_fmt(v['pinball_vs_monthly_spend'])} "
                     f"| {_fmt(v['net_flow_ape'])} | {_fmt(v['band_coverage']) if v['band_coverage'] else '-'} |")
@@ -265,6 +349,7 @@ def render_md(res):
              "", "| Predicted bin | Count | Mean predicted | Observed |", "|---|---|---|---|"]
     rows += [f"| {b['range']} | {b['count']} | {b['mean_pred'] if b['mean_pred'] is not None else '-'} | "
              f"{b['observed'] if b['observed'] is not None else '-'} |" for b in cal["bins"]]
+    rows += render_ood(res)
     ab = res.get("ablation")
     g0 = res.get("grounding")
     rows += ["", "## Ablation: LLM-only vs rules-only vs hybrid"]
@@ -350,7 +435,9 @@ def main(argv=None, llm=None):
     res["forecast_meta"] = {"n_personas": len(personas), "n_origins_per_persona": n_orig,
                             "total_months": len(personas) * n_orig}
     res["calibration"] = eval_calibration(list(personas.values()))
-    res["methodology"] = METHODOLOGY
+    res["methodology"] = list(METHODOLOGY)
+    res["ood"] = eval_ood({n: load_messy(n) for n in OOD_PERSONAS})
+    res["methodology"] += ood_notes(res)
     res["grounding"] = eval_grounding(personas["priya"], llm) if use_llm else None
     from eval import backtest  # lazy: backtest/ablation import from this module
     res["backtest"] = {n: backtest.run(p) for n, p in personas.items()}

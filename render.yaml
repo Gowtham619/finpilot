@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: finpilot
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    envVars:
+      - key: MESH_API_KEY
+        sync: false
+      - key: FINPILOT_AUTOSEED
+        value: "1"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -54,6 +55,7 @@ def recurring_flows(model, dates):
 class Result:
     dates: pd.DatetimeIndex
     paths: np.ndarray
+    disc_by_cat: np.ndarray | None = None  # n x cats total discretionary spend (detail=True only)
 
     @property
     def p10(self): return np.percentile(self.paths, 10, axis=0)
@@ -84,7 +86,17 @@ class Result:
                 "end_p90": round(self.end_p90, 2), "risk_day": self.risk_day}
 
 
-def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts=None) -> Result:
+def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts=None,
+                spend_scale=1.0, detail=False) -> Result:
+    """Weekday-matched bootstrap. `cuts` (per-category fractions) and `spend_scale` (global
+    multiplier on discretionary spend, 0..3) never touch the RNG stream, so results are
+    common-random-number comparable across cuts / spend_scale / extra_flows."""
+    try:
+        spend_scale = float(spend_scale)
+    except (TypeError, ValueError):
+        raise ValueError("spend_scale must be a number in 0..3") from None
+    if not (math.isfinite(spend_scale) and 0.0 <= spend_scale <= 3.0):
+        raise ValueError("spend_scale must be finite and in 0..3")
     rng = np.random.default_rng(seed)
     dates = pd.date_range(model.last_date + pd.Timedelta(days=1), periods=horizon)
     fixed = recurring_flows(model, dates)
@@ -101,9 +113,14 @@ def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts
     rows = np.empty((n, horizon), dtype=int)
     for j, d in enumerate(dates):  # weekday-matched bootstrap of observed days
         rows[:, j] = rng.choice(by_wd[d.weekday()], size=n)
+    if spend_scale != 1.0:
+        scale = scale * spend_scale
     disc = (model.daily[rows] * scale).sum(axis=2) if model.cats else np.zeros((n, horizon))
     paths = balance + np.cumsum(fixed[None, :] - disc, axis=1)
-    return Result(dates, paths)
+    by_cat = None
+    if detail:
+        by_cat = (model.daily[rows].sum(axis=1) * scale) if model.cats else np.zeros((n, 0))
+    return Result(dates, paths, by_cat)
 
 
 def goal_status(model, balance, target, deadline, n=1000, seed=0, max_horizon=365):

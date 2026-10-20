@@ -9,10 +9,11 @@
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
 header{display:flex;gap:12px;align-items:center;padding:12px 20px;border-bottom:1px solid #263049;flex-wrap:wrap}
 header h1{margin:0;font-size:20px;color:var(--acc)}
-main{display:grid;grid-template-columns:1fr 340px;gap:16px;padding:16px 20px}
-@media(max-width:900px){main{grid-template-columns:1fr}}
+main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;padding:16px 20px}
+@media(max-width:900px){main{grid-template-columns:minmax(0,1fr)}}
 .panel{background:var(--panel);border-radius:10px;padding:14px}
-nav button{background:none;border:0;color:var(--mute);padding:8px 12px;cursor:pointer;font:inherit}
+#nav{display:flex;overflow-x:auto;overflow-y:hidden;max-width:100%;scrollbar-width:thin;-webkit-overflow-scrolling:touch}
+nav button{flex:none;white-space:nowrap;background:none;border:0;color:var(--mute);padding:8px 12px;cursor:pointer;font:inherit}
 nav button.on{color:var(--acc);border-bottom:2px solid var(--acc)}
 .tab{display:none}.tab.on{display:block}
 input,select,button.act{background:#0f1420;color:var(--ink);border:1px solid #2c3854;border-radius:6px;padding:7px 10px;font:inherit}
@@ -36,7 +37,7 @@ canvas{max-height:300px}
 .chip.cloudy,.day.cloudy{background:#44403c;border-color:#d6d3d1;color:#f5f5f4}
 .chip.rain,.day.rain{background:#1e3a8a;border-color:#93c5fd;color:#dbeafe}
 .chip.storm,.day.storm{background:#7f1d1d;border-color:#fca5a5;color:#fee2e2}
-#wCal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin:8px 0}
+#wCal{margin:8px 0}.crow{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin-bottom:4px}
 .dow{font-size:11px;color:var(--mute);text-align:center}
 .day{border:1px solid;border-radius:6px;padding:2px;text-align:center;min-height:54px;font-size:11px;display:flex;flex-direction:column;overflow:hidden}
 .day.empty{border:0;background:none}.day small{text-align:left;opacity:.85}.day .g{font-size:15px}.day b{font-size:11px}
@@ -52,16 +53,43 @@ canvas{max-height:300px}
 .wnote{color:var(--warn);font-size:13px;margin:4px 0}
 button.rm{border:0;color:var(--ink);cursor:pointer;font:inherit;font-size:12px}
 #wLife{width:220px;max-width:100%}
+header>*{min-width:0}
+#upForm{display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:0}
+#upForm input[type=file]{max-width:100%;min-width:0}
+.panel{min-width:0}pre{white-space:pre-wrap;overflow-wrap:anywhere}fieldset{min-width:0;max-width:100%}
+.tab form input,.tab form fieldset input{max-width:100%}
+#chForm input{width:70%}
+#wErr{color:var(--bad);font-size:13px}#wRisk{color:var(--mute);font-size:13px}#wDay{min-height:1.4em;color:var(--ink);font-size:13px;margin:4px 0}
+.tour-hl{outline:3px solid var(--warn);outline-offset:2px;border-radius:6px}
+#tourBar{position:fixed;left:0;right:0;bottom:0;z-index:50;background:#0b1020f2;border-top:2px solid var(--acc);padding:10px 20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+#tourBar[hidden]{display:none}
+#tourCap{flex:1 1 320px;min-width:0;font-size:16px;overflow-wrap:anywhere}#tourCap.err{color:var(--bad)}
+.tctl{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.tctl small{color:var(--mute)}
+.tctl button{background:#263049;color:var(--ink);border:0;border-radius:6px;padding:6px 10px;font:inherit;cursor:pointer}
+.tctl button[hidden]{display:none}
+body.touring{padding-bottom:150px}
+@media(max-width:600px){
+  header{padding:10px 12px;gap:8px}
+  header select{flex:1 1 50%;width:auto}header>#tourBtn,#upForm,#upForm input,#upForm button{width:100%}
+  header h1{width:100%}
+  main{padding:12px}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #chForm input,#afForm input,#goForm input,#duForm input{width:100%;margin:2px 0}
+  #wLife{width:100%}.wrow label{width:100%}#wAmount{width:100%!important}
+  #tourBar{padding:8px 12px}#tourCap{font-size:14px}body.touring{padding-bottom:190px}
+}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 </style>
 </head>
 <body>
 <header>
   <h1>FinPilot</h1>
   <select id="persona"></select><button class="act" id="loadBtn">Load persona</button>
-  <form id="upForm" style="display:flex;gap:6px;align-items:center">
-    <input name="profile" value="me" pattern="[A-Za-z0-9_\-]{1,40}" style="width:90px" title="Profile name for this upload (letters, digits, _ or -)" required>
+  <button class="act" id="tourBtn" type="button">▶ Guided demo</button>
+  <form id="upForm">
+    <input name="profile" value="me" pattern="[A-Za-z0-9_\-]{1,40}" size="8" title="Profile name for this upload (letters, digits, _ or -)" required>
     <input type="file" name="file" accept=".csv" required>
-    <input name="opening_balance" type="number" value="0" style="width:110px" title="Opening balance">
+    <input name="opening_balance" type="number" value="0" size="8" title="Opening balance">
     <button class="act">Upload CSV</button>
   </form>
   <span id="err" style="color:var(--bad)"></span>
@@ -88,14 +116,17 @@ button.rm{border:0;color:var(--ink);cursor:pointer;font:inherit;font-size:12px}
         <input id="wLife" type="range" min="0" max="200" step="5" value="100">
         <button class="act" id="wReset" type="button">Reset</button>
         <button class="act" id="wRefresh" type="button">Refresh</button>
+        <span id="wErr" role="alert"></span>
         <span id="wBusy" role="status" style="color:var(--mute)"></span>
       </div>
       <p id="wMsg" style="color:var(--mute)">Load a persona first.</p>
       <div id="wBody" hidden>
         <div class="wrow"><span id="wChip"></span><div id="wHeadline"></div></div>
+        <div id="wRisk"></div>
         <div id="wFlows"></div>
-        <div id="wCal" role="group" aria-label="60-day risk calendar"></div>
-        <div class="legend"><span class="day clear">☀ Clear &lt;5%</span><span class="day cloudy">⛅ Cloudy 5-15%</span><span class="day rain">🌧 Rain 15-35%</span><span class="day storm">⛈ Storm &ge;35%</span></div>
+        <div id="wCal" role="grid" aria-label="60-day risk calendar. Arrow keys move, Home and End jump, Enter shows details"></div>
+        <div id="wDay" role="status" aria-live="polite"></div>
+        <div class="legend"><span class="day clear">☀ Clear &lt;5%</span><span class="day cloudy">⛅ Cloudy 5-15%</span><span class="day rain">🌧 Rain 15-35%</span><span class="day storm">⛈ Storm &ge;35%</span> <small style="color:var(--mute)">A storm window is a run of days at 25% or more.</small></div>
         <h3>Storms</h3><div id="wStorms"></div>
         <div id="wAutopsyBox"><h3>Autopsy of the failing futures</h3><div id="wAutopsy"></div></div>
         <h3>Umbrellas</h3><div id="wApplied" class="wrow"></div><div id="wUmbrellas"></div>
@@ -125,12 +156,20 @@ button.rm{border:0;color:var(--ink);cursor:pointer;font:inherit;font-size:12px}
     </div>
     <div id="chat" class="tab">
       <h3>Ask about your money</h3>
-      <form id="chForm"><input name="q" style="width:70%" placeholder="How much did I spend on food delivery in July?" required><button class="act">Ask</button></form>
+      <form id="chForm"><input name="q" placeholder="How much did I spend on food delivery in July?" required><button class="act">Ask</button></form>
       <div id="chOut"></div>
     </div>
   </section>
   <aside class="panel"><h3 style="margin-top:0">Live agent trace</h3><div id="trace"></div></aside>
 </main>
+<div id="tourBar" hidden>
+  <div id="tourCap" role="status" aria-live="polite"></div>
+  <div class="tctl"><small id="tourStep"></small>
+    <button type="button" id="tourPause">Pause</button><button type="button" id="tourSkip">Skip step</button>
+    <button type="button" id="tourReplay" hidden>Replay</button><button type="button" id="tourStop">Stop</button></div>
+</div>
+<script src="/static/util.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/tour.js"></script>
 </body>
 </html>

@@ -12,8 +12,9 @@ function el(tag, cls, text) {
   if (text !== undefined) e.textContent = text;
   return e;
 }
-const money = (x) => "₹" + Math.round(x).toLocaleString("en-IN");
-const pct = (x) => Math.round(x * 100) + "%";
+const { money, pct, fmtDate, weekdayMon, worstLabel, deltaPts } = window.FPU;  // pure helpers: static/util.js
+let STATE = null;  // last rendered /api/state (read by the guided demo)
+const emit = (name, detail) => document.dispatchEvent(new CustomEvent(name, { detail }));
 
 async function api(path, body, form) {
   const opt = form ? { method: "POST", body: form }
@@ -54,9 +55,13 @@ function follow(runId, then) {
     if (then) then();
   };
 }
-function fail(e) { $("#err").textContent = e.message; setTimeout(() => ($("#err").textContent = ""), 6000); }
+function fail(e) {
+  $("#err").textContent = e.message; setTimeout(() => ($("#err").textContent = ""), 6000);
+  emit("fp:error", { message: e.message });
+}
 
 function renderState(st) {
+  STATE = st;
   if (!st.has_data || !st.forecast) {
     $("#kpis").replaceChildren(); $("#findings").replaceChildren(); $("#recList").replaceChildren();
     $("#goList").replaceChildren(); $("#narrative").textContent = "";
@@ -92,7 +97,7 @@ function renderState(st) {
              el("span", "tag", r.trigger_type), el("div", "", r.text));
     const d = el("details"); d.append(el("summary", "", "Why?"),
       el("div", "", "Triggered by: " + r.finding_ids.join(", ")),
-      el("div", "", "Verifier (" + (r.verification || "n/a") + "): " + r.verifier_notes),
+      el("div", "vnote", "Verifier (" + (r.verification || "n/a") + "): " + r.verifier_notes),
       el("pre", "", JSON.stringify(r.evidence, null, 1)));
     c.append(d); rl.append(c);
   });
@@ -113,26 +118,22 @@ async function loadDigests() {
              el("pre", "", d.content));
     box.append(c);
   });
+  emit("fp:digest");
 }
 async function refresh() {
   renderState(await api(`/api/state/${encodeURIComponent(profile)}`));
   weatherInvalidate();
   loadDigests().catch(fail);
+  emit("fp:rendered");
 }
 
 // ---------------------------------------------------------------- Money Weather
-const W = { scenario: "none", lifestyle: 1.0, cuts: {}, seq: 0, timer: null, loaded: false, data: null, hl: null };
+const W = { scenario: "none", lifestyle: 1.0, cuts: {}, seq: 0, timer: null, loaded: false, data: null, hl: null,
+            shown: null, activeDate: null };
 const SCENARIOS = [["none", "Normal 60 days"], ["salary_skip", "Job-loss drill"],
                    ["purchase", "Big purchase"], ["emergency", "Medical emergency"]];
 const LABELS = { clear: ["☀", "Clear skies"], cloudy: ["⛅", "Cloudy"], rain: ["🌧", "Rain possible"], storm: ["⛈", "Storm ahead"] };
-const SEVERITY = ["clear", "cloudy", "rain", "storm"];
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-function fmtDate(iso) { const [, m, d] = iso.split("-"); return `${MONTHS[+m - 1]} ${+d}`; }
-function weekdayMon(iso) { const [y, m, d] = iso.split("-").map(Number); return (new Date(y, m - 1, d).getDay() + 6) % 7; }
-function worstLabel(cal) {
-  return cal.reduce((w, c) => (SEVERITY.indexOf(c.label) > SEVERITY.indexOf(w) ? c.label : w), "clear");
-}
 function dayTitle(c, buffer) {
   return `${fmtDate(c.date)}: ${pct(c.p_below_buffer)} chance of dropping below your safety buffer (${money(buffer)}); ` +
     `balance p10 ${money(c.p10)}, median ${money(c.p50)}, p90 ${money(c.p90)}`;
@@ -144,6 +145,17 @@ function weatherQueryString() {
   if (Object.keys(W.cuts).length) q.set("cuts", JSON.stringify(W.cuts));
   return q.toString();
 }
+function weatherSetErr(msg) {
+  $("#wErr").textContent = msg || "";
+  if (msg) $("#wAmount").setAttribute("aria-invalid", "true"); else $("#wAmount").removeAttribute("aria-invalid");
+}
+// Pressed/disabled/slider state always mirrors W so the controls never contradict what is on screen.
+function weatherSyncControls() {
+  document.querySelectorAll("#wScen button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.s === W.scenario)));
+  $("#wAmount").disabled = !(W.scenario === "purchase" || W.scenario === "emergency");
+  $("#wLife").value = String(Math.round(W.lifestyle * 100));
+  $("#wLifeLbl").textContent = `Lifestyle spending ${Math.round(W.lifestyle * 100)}%`;
+}
 async function weatherQuery() {
   clearTimeout(W.timer);
   const mine = ++W.seq;  // request counter: only the newest response may render
@@ -153,25 +165,46 @@ async function weatherQuery() {
     const d = await api(`/api/weather/${encodeURIComponent(profile)}?${weatherQueryString()}`);
     if (mine !== W.seq) return;
     W.data = d; W.loaded = true;
+    W.shown = { scenario: W.scenario, lifestyle: W.lifestyle, cuts: { ...W.cuts } };
+    weatherSetErr("");
     follow(d.run_id);
     weatherRender(d);
+    emit("fp:weather");
   } catch (e) {
     if (mine !== W.seq) return;
-    W.data = null; W.loaded = false;
-    weatherEmpty(/no data/i.test(e.message) ? "Load a persona first." : "Could not load the weather: " + e.message);
-    fail(e);
+    if (W.data && W.shown) {
+      // keep the previous render; roll the controls back to what is actually displayed
+      W.scenario = W.shown.scenario; W.lifestyle = W.shown.lifestyle; W.cuts = { ...W.shown.cuts };
+      weatherSyncControls();
+      renderUmbrellas(W.data);
+      weatherSetErr(e.message);
+    } else {
+      W.loaded = false;
+      weatherEmpty(/no data/i.test(e.message) ? "Load a persona first." : "Could not load the weather: " + e.message);
+      weatherSetErr(e.message);
+    }
+    emit("fp:error", { message: e.message });
   } finally {
     if (mine === W.seq) { $("#wBusy").textContent = ""; $("#weather").removeAttribute("aria-busy"); }
   }
 }
 function weatherEmpty(msg) {
   $("#wMsg").textContent = msg;
-  ["#wHeadline", "#wFlows", "#wCal", "#wStorms", "#wAutopsy", "#wUmbrellas", "#wApplied"].forEach((s) => $(s).replaceChildren());
+  ["#wHeadline", "#wFlows", "#wCal", "#wStorms", "#wAutopsy", "#wUmbrellas", "#wApplied", "#wRisk", "#wDay"].forEach((s) => $(s).replaceChildren());
   $("#wChip").replaceChildren(); $("#wChip").className = "";
   $("#wBody").hidden = true;
 }
+// A different persona was loaded: nothing from the old one may survive, including in-flight responses.
 function weatherInvalidate() {
-  W.loaded = false; W.cuts = {}; W.hl = null;
+  clearTimeout(W.timer);
+  W.seq++;  // stale responses from the old persona are dropped
+  W.loaded = false; W.data = null; W.shown = null; W.cuts = {}; W.hl = null; W.activeDate = null;
+  W.scenario = "none"; W.lifestyle = 1.0;
+  $("#wAmount").value = "";
+  weatherSetErr("");
+  weatherSyncControls();
+  $("#wBusy").textContent = ""; $("#weather").removeAttribute("aria-busy");
+  weatherEmpty("Load a persona first.");
   if ($("#weather").classList.contains("on")) weatherQuery().catch(fail);
 }
 function weatherEnter() { if (!W.loaded) weatherQuery().catch(fail); }
@@ -187,8 +220,7 @@ function weatherRender(d) {
   if (d.scenario_amount != null && (d.scenario === "purchase" || d.scenario === "emergency") && !$("#wAmount").value) {
     $("#wAmount").value = Math.round(d.scenario_amount);
   }
-  document.querySelectorAll("#wScen button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.s === W.scenario)));
-  $("#wAmount").disabled = !(W.scenario === "purchase" || W.scenario === "emergency");
+  weatherSyncControls();
 }
 function renderWeatherHeadline(d) {
   const worst = worstLabel(d.calendar);
@@ -196,6 +228,7 @@ function renderWeatherHeadline(d) {
   const chip = $("#wChip"); chip.replaceChildren(el("span", "", glyph + " "), el("span", "", text));
   chip.className = "chip " + worst;
   $("#wHeadline").replaceChildren(el("p", "", d.headline_text));
+  $("#wRisk").textContent = "Chance of dipping below your safety buffer: " + pct(d.headline.p_any_breach);
   const fl = $("#wFlows"); fl.replaceChildren();
   (d.scenario_flows || []).forEach((f) => {
     const verb = f.amount < 0 ? "−" : "+";
@@ -205,34 +238,74 @@ function renderWeatherHeadline(d) {
 }
 function renderCalendar(d) {
   const g = $("#wCal"); g.replaceChildren();
-  ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].forEach((n) => g.append(el("div", "dow", n)));
+  const hdr = el("div", "crow"); hdr.setAttribute("role", "row");
+  ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].forEach((n) => {
+    const h = el("div", "dow", n); h.setAttribute("role", "columnheader"); hdr.append(h);
+  });
+  g.append(hdr);
   if (!d.calendar.length) return;
-  for (let i = 0; i < weekdayMon(d.calendar[0].date); i++) g.append(el("div", "day empty"));
+  const keep = d.calendar.some((c) => c.date === W.activeDate) ? W.activeDate : d.calendar[0].date;
+  W.activeDate = keep;
+  let row = null, col = weekdayMon(d.calendar[0].date);
+  const newRow = () => { row = el("div", "crow"); row.setAttribute("role", "row"); g.append(row); };
+  newRow();
+  for (let i = 0; i < col; i++) { const e = el("div", "day empty"); e.setAttribute("role", "gridcell"); e.setAttribute("aria-hidden", "true"); row.append(e); }
   d.calendar.forEach((c) => {
+    if (col === 7) { col = 0; newRow(); }
     const cell = el("div", "day " + c.label);
-    cell.tabIndex = 0;
+    cell.setAttribute("role", "gridcell");
+    cell.tabIndex = c.date === keep ? 0 : -1;  // roving tabindex: the grid is one tab stop
     cell.dataset.date = c.date;
     const t = dayTitle(c, d.buffer);
     cell.title = t; cell.setAttribute("aria-label", t);
     cell.append(el("small", "", String(+c.date.slice(8))), el("span", "g", LABELS[c.label][0]), el("b", "", pct(c.p_below_buffer)));
-    g.append(cell);
+    row.append(cell); col++;
   });
+  $("#wDay").replaceChildren();
   highlightStorm(W.hl, false);
+}
+function calCells() { return Array.from(document.querySelectorAll("#wCal .day[data-date]")); }
+function calFocus(cell) {
+  calCells().forEach((c) => { c.tabIndex = c === cell ? 0 : -1; });
+  W.activeDate = cell.dataset.date;
+  cell.focus();
+}
+function calDetail(cell) {
+  const c = W.data && W.data.calendar.find((x) => x.date === cell.dataset.date);
+  if (!c) return;
+  $("#wDay").textContent = `${fmtDate(c.date)} · ${LABELS[c.label][1]} · ${pct(c.p_below_buffer)} risk · balance p10 ${money(c.p10)} to p90 ${money(c.p90)} (median ${money(c.p50)})`;
+}
+function calKey(e) {
+  const cell = e.target.closest && e.target.closest(".day[data-date]");
+  if (!cell) return;
+  const cells = calCells(), i = cells.indexOf(cell);
+  const move = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[e.key];
+  let j = i;
+  if (move !== undefined) j = Math.min(cells.length - 1, Math.max(0, i + move));
+  else if (e.key === "Home") j = 0;
+  else if (e.key === "End") j = cells.length - 1;
+  else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); calDetail(cell); return; }
+  else return;
+  e.preventDefault();
+  calFocus(cells[j]);
 }
 function highlightStorm(st, scroll) {
   W.hl = st;
   document.querySelectorAll("#wCal .day[data-date]").forEach((c) => {
     c.classList.toggle("hl", !!st && c.dataset.date >= st.start && c.dataset.date <= st.end);
   });
-  document.querySelectorAll("#wStorms .storm").forEach((c) => c.classList.toggle("sel", !!st && c.dataset.start === st.start));
-  if (st && scroll) $("#wAutopsyBox").scrollIntoView({ behavior: "smooth", block: "start" });
+  document.querySelectorAll("#wStorms .storm").forEach((c) => {
+    const on = !!st && c.dataset.start === st.start;
+    c.classList.toggle("sel", on); c.setAttribute("aria-pressed", String(on));
+  });
+  if (st && scroll) $("#wAutopsyBox").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
 }
 function renderStorms(d) {
   const box = $("#wStorms"); box.replaceChildren();
   if (!d.storms.length) { box.append(el("div", "card", "No storms: no run of days at 25% risk or more.")); return; }
   d.storms.forEach((st) => {
     const c = el("div", "card storm " + st.label);
-    c.tabIndex = 0; c.setAttribute("role", "button"); c.dataset.start = st.start;
+    c.tabIndex = 0; c.setAttribute("role", "button"); c.setAttribute("aria-pressed", "false"); c.dataset.start = st.start;
     c.append(el("b", "", `${LABELS[st.label][0]} ${fmtDate(st.start)} – ${fmtDate(st.end)}`),
              el("div", "", `${st.days} days, peak ${pct(st.peak_p)} on ${fmtDate(st.peak_date)} (${LABELS[st.label][1]})`));
     const pick = () => highlightStorm(W.hl && W.hl.start === st.start ? null : st, true);
@@ -248,7 +321,7 @@ function renderAutopsy(d) {
   const fb = a.first_breach || {};
   if (fb.already_below) box.append(el("div", "wnote", "You start below the safety buffer."));
   else if (fb.date) box.append(el("div", "", `Most common first dip: ${fmtDate(fb.date)} (${pct(fb.share || 0)} of failing futures)`));
-  if (a.insufficient_failing) box.append(el("div", "wnote", "Too few failing futures to rank causes reliably."));
+  if (a.insufficient_failing && a.n_failing > 0) box.append(el("div", "wnote", "Too few failing futures to rank causes reliably."));
   if ((a.causes || []).length) {
     box.append(el("h4", "", "What drives the failing futures"));
     a.causes.forEach((c) => {
@@ -279,7 +352,9 @@ function renderUmbrellas(d) {
     const c = el("div", "card");
     const total = u.cumulative_cut_pct != null ? u.cumulative_cut_pct : u.cut_pct;
     c.append(el("b", "", `Cut ${u.category.replace(/_/g, " ")} by ${Math.round(total)}%`),
-             el("div", "", `Risk ${pct(u.p_any_breach_before)} → ${pct(u.p_any_breach_after)} (−${Math.round(u.risk_reduction * 100)} pts), costs about ${money(u.monthly_sacrifice)}/month`));
+             el("div", "", `Risk ${pct(u.p_any_breach_before)} → ${pct(u.p_any_breach_after)}` +
+               (deltaPts(u.p_any_breach_before, u.p_any_breach_after) ? ` (${deltaPts(u.p_any_breach_before, u.p_any_breach_after)})` : "") +
+               `, costs about ${money(u.monthly_sacrifice)}/month`));
     [["before", u.p_any_breach_before], ["after", u.p_any_breach_after]].forEach(([k, v]) => {
       const row = el("div", "bar"), track = el("div", "track"), fill = el("div", "fill " + k);
       fill.style.width = Math.min(100, v * 100) + "%"; track.append(fill);
@@ -307,10 +382,15 @@ function renderUmbrellas(d) {
 function weatherInit() {
   SCENARIOS.forEach(([id, label]) => {
     const b = el("button", "chipbtn", label); b.type = "button"; b.dataset.s = id; b.setAttribute("aria-pressed", String(id === W.scenario));
-    b.onclick = () => { W.scenario = id; $("#wAmount").value = ""; weatherQuery().catch(fail); };
+    b.onclick = () => { W.scenario = id; $("#wAmount").value = ""; weatherSetErr(""); weatherSyncControls(); weatherQuery().catch(fail); };
     $("#wScen").append(b);
   });
   $("#wAmount").disabled = true;
+  $("#wCal").addEventListener("keydown", calKey);
+  $("#wCal").addEventListener("click", (e) => {
+    const cell = e.target.closest(".day[data-date]");
+    if (cell) { calFocus(cell); calDetail(cell); }
+  });
   $("#wAmount").onchange = () => weatherQuery().catch(fail);
   const sl = $("#wLife");
   sl.oninput = () => {
@@ -321,7 +401,8 @@ function weatherInit() {
   };
   $("#wReset").onclick = () => {
     W.scenario = "none"; W.lifestyle = 1.0; W.cuts = {}; W.hl = null;
-    sl.value = 100; $("#wLifeLbl").textContent = "Lifestyle spending 100%"; $("#wAmount").value = "";
+    $("#wAmount").value = ""; weatherSetErr("");
+    weatherSyncControls();
     weatherQuery().catch(fail);
   };
   $("#wRefresh").onclick = () => weatherQuery().catch(fail);
@@ -353,6 +434,7 @@ async function init() {
       o.append(el("div", "card", a.narrative), el("div", "card", "Verdict: " + a.verdict));
       if (a.notice) o.append(el("div", "card", "Notice: " + a.notice));
       a.best_dates.forEach((d) => o.append(el("div", "card", `${d.date}: overdraft risk ${pct(d.p_overdraft)}, median ${money(d.end_p50)}`)));
+      emit("fp:afford");
     }).catch(fail);
   };
   $("#duForm").onsubmit = (e) => {
@@ -371,6 +453,7 @@ async function init() {
           { label: "p10", data: side.bands.p10, borderColor: "#f87171", pointRadius: 0, fill: "-2", backgroundColor: "#5eead41a" }] },
         options: { plugins: { title: { display: true,
           text: `${side.name}: overdraft ${pct(side.summary.p_overdraft)}, median ${money(side.summary.end_p50)}` } } } }));
+      emit("fp:duel");
     }).catch(fail);
   };
   $("#goForm").onsubmit = (e) => {

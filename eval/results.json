@@ -287,6 +287,58 @@
         ]
       }
     },
+    "model_robust_centre": {
+      "net_flow_ape": {
+        "mean": 0.6503,
+        "min": 0.3453,
+        "max": 1.1129,
+        "values": [
+          1.1129,
+          0.4928,
+          0.3453
+        ]
+      },
+      "balance_mape": {
+        "mean": 0.0322,
+        "min": 0.0216,
+        "max": 0.0393,
+        "values": [
+          0.0393,
+          0.0358,
+          0.0216
+        ]
+      },
+      "mae_vs_monthly_spend": {
+        "mean": 0.08,
+        "min": 0.0575,
+        "max": 0.1032,
+        "values": [
+          0.0794,
+          0.0575,
+          0.1032
+        ]
+      },
+      "pinball_vs_monthly_spend": {
+        "mean": 0.021,
+        "min": 0.0183,
+        "max": 0.0234,
+        "values": [
+          0.0234,
+          0.0183,
+          0.0212
+        ]
+      },
+      "band_coverage": {
+        "mean": 0.9417,
+        "min": 0.9122,
+        "max": 0.957,
+        "values": [
+          0.9559,
+          0.9122,
+          0.957
+        ]
+      }
+    },
     "flat_balance": {
       "net_flow_ape": {
         "mean": 1.0,
@@ -478,6 +530,7 @@
     "The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this is a design choice.",
     "The LLM-only advice is audited with no engine evidence, so any derived number in its text that is not in its claims counts as ungrounded; this inflates the gap relative to the hybrid, whose recommendations carry engine evidence.",
     "The LLM-only forecast uses the same 3 monthly origins per persona as the model (monthly net-flow history before the origin -> that month's net flow). A net-flow APE of 1.0 equals the flat-balance forecast.",
+    "model_robust_centre is the third forecast candidate (task 5c, pre-registered, not adopted): p50 from a bootstrap pool without flagged one-off charges, p10/p90 = that p50 plus the full-pool offsets (same seed). It is scored for transparency only; the shipped forecaster uses the model row. See eval/forecast_experiments.md.",
     "The ablation is a single run at temperature 0 over 3 synthetic personas (only when run with an LLM); differences are indicative, not statistically tested.",
     "Out-of-distribution check: a second generator (eval/generate_messy.py) with different merchants, noisy UPI/NEFT/IMPS/card description formats, refunds, cash, EMIs, an annual subscription, a price increase and a travel spike was scored with the engines and thresholds unchanged. The same author wrote both generators and knows the engines, so this is a robustness check, not independent validation; it is not evidence about real bank data.",
     "OOD behaviour: rules-only categorization accuracy fell from 0.8578 to 0.3327 (coverage 0.4201); detection and forecast were scored on oracle categories, so the categorizer drop does not feed into them. The oracle-category scoring flatters the OOD detection and forecast numbers.",
@@ -769,6 +822,58 @@
             0.6086,
             0.7828,
             0.8491
+          ]
+        }
+      },
+      "model_robust_centre": {
+        "net_flow_ape": {
+          "mean": 5.4463,
+          "min": 3.5813,
+          "max": 6.9773,
+          "values": [
+            5.7804,
+            6.9773,
+            3.5813
+          ]
+        },
+        "balance_mape": {
+          "mean": 0.2287,
+          "min": 0.2005,
+          "max": 0.2821,
+          "values": [
+            0.2821,
+            0.2005,
+            0.2035
+          ]
+        },
+        "mae_vs_monthly_spend": {
+          "mean": 0.1445,
+          "min": 0.0931,
+          "max": 0.2232,
+          "values": [
+            0.2232,
+            0.0931,
+            0.1173
+          ]
+        },
+        "pinball_vs_monthly_spend": {
+          "mean": 0.051,
+          "min": 0.0441,
+          "max": 0.0599,
+          "values": [
+            0.0489,
+            0.0599,
+            0.0441
+          ]
+        },
+        "band_coverage": {
+          "mean": 0.8846,
+          "min": 0.8484,
+          "max": 0.9351,
+          "values": [
+            0.8703,
+            0.8484,
+            0.9351
           ]
         }
       },

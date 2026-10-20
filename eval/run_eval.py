@@ -115,7 +115,7 @@ def eval_forecast(persona, origins=3):
     df = _with_truth(persona)
     months = df["date"].dt.to_period("M").nunique()
     monthly_spend = float(-df.loc[df["amount"] < 0, "amount"].sum() / months)
-    names = ("model",) + BASELINES
+    names = ("model", "model_robust_centre") + BASELINES
     acc = {n: {"ape": [], "mape": [], "mae": [], "pin": [], "cov": []} for n in names}
     for cutoff in forecast_origins(df, origins):
         end = (cutoff + pd.offsets.MonthEnd(0)).normalize()
@@ -126,11 +126,15 @@ def eval_forecast(persona, origins=3):
         actual = bal0 + np.cumsum(_daily_net(df, cutoff, end))
         true_net = actual[-1] - bal0
         r = F.monte_carlo(model, bal0, len(days), 1000)
+        robust = F.fit(train, robust_pool=True)
+        _align(robust, cutoff)
+        rc = F.central_robust_bands(model, robust, bal0, len(days), 1000)
         prev_start = cutoff - pd.offsets.MonthBegin(1)
         prev = _daily_net(train, prev_start, cutoff - pd.Timedelta(days=1))
         trailing = train[train["date"] >= cutoff - pd.Timedelta(days=30)]["amount"].sum() / 30
         paths = baseline_paths(bal0, prev, len(days), trailing)
-        fcs = {"model": (r.p50, {0.1: r.p10, 0.5: r.p50, 0.9: r.p90})}
+        fcs = {"model": (r.p50, {0.1: r.p10, 0.5: r.p50, 0.9: r.p90}),
+               "model_robust_centre": (rc.p50, {0.1: rc.p10, 0.5: rc.p50, 0.9: rc.p90})}
         for n, p in paths.items():
             fcs[n] = (p, {q: p for q in QUANTILES})
         for n, (pt, qs) in fcs.items():
@@ -139,6 +143,7 @@ def eval_forecast(persona, origins=3):
             acc[n]["mae"].append(abs(pt[-1] - actual[-1]) / monthly_spend)
             acc[n]["pin"].append(_pinball(qs, actual) / monthly_spend)
         acc["model"]["cov"].append(float(np.mean((actual >= r.p10) & (actual <= r.p90))))
+        acc["model_robust_centre"]["cov"].append(float(np.mean((actual >= rc.p10) & (actual <= rc.p90))))
     out = {}
     for n, v in acc.items():
         out[n] = {"net_flow_ape": round(float(np.mean(v["ape"])), 4), "balance_mape": round(float(np.mean(v["mape"])), 4),
@@ -283,6 +288,7 @@ METHODOLOGY = [
     "The LLM-only baselines receive a compressed monthly merchant table, not raw transactions; this is a design choice.",
     "The LLM-only advice is audited with no engine evidence, so any derived number in its text that is not in its claims counts as ungrounded; this inflates the gap relative to the hybrid, whose recommendations carry engine evidence.",
     "The LLM-only forecast uses the same 3 monthly origins per persona as the model (monthly net-flow history before the origin -> that month's net flow). A net-flow APE of 1.0 equals the flat-balance forecast.",
+    "model_robust_centre is the third forecast candidate (task 5c, pre-registered, not adopted): p50 from a bootstrap pool without flagged one-off charges, p10/p90 = that p50 plus the full-pool offsets (same seed). It is scored for transparency only; the shipped forecaster uses the model row. See eval/forecast_experiments.md.",
     "The ablation is a single run at temperature 0 over 3 synthetic personas (only when run with an LLM); differences are indicative, not statistically tested.",
 ]
 
@@ -302,7 +308,9 @@ def render_ood(res):
     rows += [f"| {k} | {_fmt(v['precision'])} | {_fmt(v['recall'])} |" for k, v in d.items()]
     rows += ["", f"| Forecast ({m['n_personas']} personas x {m['n_origins_per_persona']} origins = {m['total_months']} months) | Balance MAPE | Month-end MAE / monthly spend | Pinball / monthly spend | p10-p90 coverage (nominal 0.80) |",
              "|---|---|---|---|---|"]
-    for n in ("model", "flat_balance", "seasonal_naive", "trailing_mean"):
+    for n in ("model", "model_robust_centre", "flat_balance", "seasonal_naive", "trailing_mean"):
+        if n not in f:
+            continue
         v = f[n]
         rows.append(f"| {n} | {_fmt(v['balance_mape'])} | {_fmt(v['mae_vs_monthly_spend'])} | {_fmt(v['pinball_vs_monthly_spend'])} "
                     f"| {_fmt(v['band_coverage']) if v['band_coverage'] else '-'} |")
@@ -326,9 +334,11 @@ def render_md(res):
     rows += ["", f"## Forecast (held-out months; {meta['n_personas']} personas x {meta['n_origins_per_persona']} origins = {meta['total_months']} months)",
              "| Method | Balance MAPE | Month-end MAE / monthly spend | Pinball / monthly spend | Net-flow APE | p10-p90 coverage (nominal 0.80) |",
              "|---|---|---|---|---|---|"]
-    labels = {"model": "model", "flat_balance": "flat_balance", "seasonal_naive": "seasonal_naive",
+    labels = {"model": "model", "model_robust_centre": "model_robust_centre (candidate f, not adopted)", "flat_balance": "flat_balance", "seasonal_naive": "seasonal_naive",
               "trailing_mean": "trailing-30d-mean (spikes on salary)"}
     for n, lab in labels.items():
+        if n not in f:  # results written before the candidate row existed
+            continue
         v = f[n]
         rows.append(f"| {lab} | {_fmt(v['balance_mape'])} | {_fmt(v['mae_vs_monthly_spend'])} | {_fmt(v['pinball_vs_monthly_spend'])} "
                     f"| {_fmt(v['net_flow_ape'])} | {_fmt(v['band_coverage']) if v['band_coverage'] else '-'} |")

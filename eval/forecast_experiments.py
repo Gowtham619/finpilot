@@ -147,7 +147,9 @@ GRIDS = {"k": ([0.8, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5], _cov_gap),
 
 
 def make_fit(opt, chosen):
-    def fit(df, window_days=90):
+    def fit(df, window_days=90, robust_pool=False):
+        if robust_pool:  # only feeds eval_forecast's model_robust_centre row, which score() ignores here
+            return BASE_FIT(df, window_days, robust_pool=True)
         o = _fixed(opt)
         for key, (grid, metric) in GRIDS.items():
             if opt.get(key) == "tune":
@@ -194,13 +196,95 @@ def run_all():
             base = base or s
             rows.append((name, s, eligible, verdict(base, s), {k: sorted(set(v)) for k, v in chosen.items()}))
         for label, rp in (("committed engine", False), ("candidate e robust_pool=True", True)):
-            R.F.fit = (lambda df, window_days=90: BASE_FIT(df, window_days, robust_pool=True)) if rp else BASE_FIT
+            R.F.fit = (lambda df, window_days=90, robust_pool=False: BASE_FIT(df, window_days, robust_pool=True)) if rp else BASE_FIT
             for sd in (1, 2, 3, 4):  # noise floor / seed robustness: a different Monte Carlo seed
                 R.F.monte_carlo = lambda m, b, h=60, n=1000, seed=0, *a, _sd=sd, **kw: BASE_MC(m, b, h, n, _sd, *a, **kw)
                 rows.append((f"noise floor: {label}, MC seed {sd}", score(gens), False, None, {}))
     finally:
         R.F.fit, R.F.monte_carlo = BASE_FIT, BASE_MC
     return rows
+
+
+# ---------------- task 5c: candidate f, robust centre + full-pool spread ----------------
+F_RULE = """Candidate f (task 5c, pre-registered, parameter-free; third candidate family, motivated by the failure of
+candidate e on the same held-out months): p50 from `fit(robust_pool=True)`, p10/p90 = robust p50 + (full-pool
+p10/p90 - full-pool p50), both simulations with the same seed (`forecast.central_robust_bands`). Rule, fixed before
+scoring: adopt only if, averaged over 3 personas x 3 origins on EACH generator, month-end MAE / monthly spend improves
+by >= 0.01, AND balance MAPE worsens by no more than 0.002 (original) / 0.01 (OOD), AND |coverage - 0.80| exceeds the
+committed model's |coverage - 0.80| by no more than 0.02; the MAE gain must exceed the spread across Monte Carlo seeds
+0-4; and the same rule must also hold on fresh personas never used in any attempt (original generator seeds 11, 12,
+13; OOD generator seeds 21, 22, 23; other parameters copied from the committed personas in order; these personas are
+NOT added to the committed sets). Fresh seeds of the same generators are not independent data: they share the
+generators' author and design."""
+
+FRESH_ORIGINAL = [dict(seed=s, salary=sal, gym_used=g) for s, sal, g in
+                  zip((11, 12, 13), (p["salary"] for p in PERSONAS.values()), (p["gym_used"] for p in PERSONAS.values()))]
+FRESH_OOD = [{**v, "seed": s} for s, v in zip((21, 22, 23), OOD_PERSONAS.values())]
+METHODS = ("model", "model_robust_centre")
+
+
+def score_methods(gens):
+    out = {}
+    for g, ps in gens.items():
+        res = [R.eval_forecast(p) for p in ps]
+        out[g] = {m: {k: round(float(np.mean([x[m][k] for x in res])), 4) for k in KEYS} for m in METHODS}
+    return out
+
+
+def verdict_f(s):
+    gap = lambda c: abs(c - NOMINAL)  # noqa: E731
+    checks = {}
+    for g, tol in (("original", 0.002), ("ood", 0.01)):
+        b, n = s[g]["model"], s[g]["model_robust_centre"]
+        checks[g] = {"mae_gain": round(b["mae_vs_monthly_spend"] - n["mae_vs_monthly_spend"], 4),
+                     "mape_worsening": round(n["balance_mape"] - b["balance_mape"], 4),
+                     "coverage_gap_increase": round(gap(n["band_coverage"]) - gap(b["band_coverage"]), 4)}
+        c = checks[g]
+        c["pass"] = c["mae_gain"] >= 0.01 and c["mape_worsening"] <= tol and c["coverage_gap_increase"] <= 0.02
+    return checks
+
+
+def run_f():
+    from eval.generate import generate
+    from eval.generate_messy import generate_messy
+    committed = {"original": [load_persona(n) for n in PERSONAS], "ood": [load_messy(n) for n in OOD_PERSONAS]}
+    fresh = {"original": [generate(**kw) for kw in FRESH_ORIGINAL], "ood": [generate_messy(**kw) for kw in FRESH_OOD]}
+    seeds = {}
+    try:
+        for sd in (0, 1, 2, 3, 4):
+            R.F.monte_carlo = (lambda m, b, h=60, n=1000, seed=0, *a, _sd=sd, **kw: BASE_MC(m, b, h, n, _sd, *a, **kw)) \
+                if sd else BASE_MC
+            seeds[sd] = score_methods(committed)
+    finally:
+        R.F.monte_carlo = BASE_MC
+    return seeds, score_methods(fresh)
+
+
+def render_f(seeds, fresh):
+    out = ["", "## Candidate f: robust centre, full-pool spread (task 5c)", "", F_RULE, "",
+           "| Data | MC seed | Method | Orig MAPE | Orig month-end MAE/spend | Orig coverage | OOD MAPE | OOD month-end MAE/spend | OOD coverage |",
+           "|---|---|---|---|---|---|---|---|---|"]
+    for label, sd, s in [("committed personas", k, v) for k, v in seeds.items()] + [("fresh personas", 0, fresh)]:
+        for m in METHODS:
+            o, d = s["original"][m], s["ood"][m]
+            out.append(f"| {label} | {sd} | {m} | {o['balance_mape']} | {o['mae_vs_monthly_spend']} | {o['band_coverage']} | "
+                       f"{d['balance_mape']} | {d['mae_vs_monthly_spend']} | {d['band_coverage']} |")
+    out += ["", "| Check | Generator | MAE gain (>= 0.01) | MAPE worsening (<= 0.002 orig / 0.01 OOD) | Coverage-gap increase (<= 0.02) | Pass |",
+            "|---|---|---|---|---|---|"]
+    vc, vf = verdict_f(seeds[0]), verdict_f(fresh)
+    for label, v in (("committed personas, seed 0", vc), ("fresh personas, seed 0", vf)):
+        for g, c in v.items():
+            out.append(f"| {label} | {g} | {c['mae_gain']} | {c['mape_worsening']} | {c['coverage_gap_increase']} | {'yes' if c['pass'] else 'no'} |")
+    gains = {g: [verdict_f(s)[g]["mae_gain"] for s in seeds.values()] for g in ("original", "ood")}
+    noise = {g: round(max(s[g]["model"]["mae_vs_monthly_spend"] for s in seeds.values())
+                      - min(s[g]["model"]["mae_vs_monthly_spend"] for s in seeds.values()), 4) for g in gains}
+    above = all(min(gains[g]) > noise[g] for g in gains)
+    adopted = all(c["pass"] for c in vc.values()) and all(c["pass"] for c in vf.values()) and above
+    out += ["", f"Seed noise (spread of the committed model's month-end MAE/spend over MC seeds 0-4): original {noise['original']}, "
+            f"OOD {noise['ood']}. MAE gain of f across seeds 0-4: original {min(gains['original'])}-{max(gains['original'])}, "
+            f"OOD {min(gains['ood'])}-{max(gains['ood'])}; gain exceeds noise: {'yes' if above else 'no'}.", "",
+            f"Decision: {'ADOPTED' if adopted else 'NOT ADOPTED'}."]
+    return out
 
 
 def render(rows):
@@ -217,7 +301,7 @@ def render(rows):
 
 
 def main():
-    md = render(run_all())
+    md = render(run_all()) + "\n".join(render_f(*run_f())) + "\n"
     OUT.write_text(md)
     print(md)
 

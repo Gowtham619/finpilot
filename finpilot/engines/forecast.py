@@ -137,6 +137,27 @@ def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts
     return Result(dates, paths, by_cat, cum)
 
 
+@dataclass
+class CentreBands:
+    """Robust-centre bands: p50 from the robust-pool simulation, spread from the full-pool one."""
+    dates: pd.DatetimeIndex
+    p10: np.ndarray
+    p50: np.ndarray
+    p90: np.ndarray
+    full: Result
+    robust: Result
+
+
+def central_robust_bands(model_full, model_robust, balance, horizon=60, n=1000, seed=0, **kw) -> CentreBands:
+    """Pure: run monte_carlo on both models with the SAME seed (common random numbers) and return
+    p50 := robust p50, p10/p90 := robust p50 + (full p10/p90 - full p50). Parameter-free. Extra
+    keyword arguments are passed to both monte_carlo calls unchanged."""
+    full = monte_carlo(model_full, balance, horizon, n, seed, **kw)
+    robust = monte_carlo(model_robust, balance, horizon, n, seed, **kw)
+    fp50, rp50 = full.p50, robust.p50
+    return CentreBands(full.dates, rp50 + (full.p10 - fp50), rp50, rp50 + (full.p90 - fp50), full, robust)
+
+
 def goal_status(model, balance, target, deadline, n=1000, seed=0, max_horizon=365):
     deadline = pd.Timestamp(deadline).normalize()
     horizon = max(1, (deadline - model.last_date).days)

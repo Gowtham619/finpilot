@@ -38,3 +38,42 @@ coverage moves toward 0.80 by >= 0.03 on each generator, AND balance MAPE worsen
 | noise floor: candidate e robust_pool=True, MC seed 2 | 0.0322 | 0.0821 | 0.8624 | 0.2241 | 0.1414 | 0.5723 | - | - |
 | noise floor: candidate e robust_pool=True, MC seed 3 | 0.0315 | 0.0803 | 0.866 | 0.2281 | 0.1458 | 0.5794 | - | - |
 | noise floor: candidate e robust_pool=True, MC seed 4 | 0.0317 | 0.0794 | 0.8551 | 0.2287 | 0.1442 | 0.5905 | - | - |
+
+## Candidate f: robust centre, full-pool spread (task 5c)
+
+Candidate f (task 5c, pre-registered, parameter-free; third candidate family, motivated by the failure of
+candidate e on the same held-out months): p50 from `fit(robust_pool=True)`, p10/p90 = robust p50 + (full-pool
+p10/p90 - full-pool p50), both simulations with the same seed (`forecast.central_robust_bands`). Rule, fixed before
+scoring: adopt only if, averaged over 3 personas x 3 origins on EACH generator, month-end MAE / monthly spend improves
+by >= 0.01, AND balance MAPE worsens by no more than 0.002 (original) / 0.01 (OOD), AND |coverage - 0.80| exceeds the
+committed model's |coverage - 0.80| by no more than 0.02; the MAE gain must exceed the spread across Monte Carlo seeds
+0-4; and the same rule must also hold on fresh personas never used in any attempt (original generator seeds 11, 12,
+13; OOD generator seeds 21, 22, 23; other parameters copied from the committed personas in order; these personas are
+NOT added to the committed sets). Fresh seeds of the same generators are not independent data: they share the
+generators' author and design.
+
+| Data | MC seed | Method | Orig MAPE | Orig month-end MAE/spend | Orig coverage | OOD MAPE | OOD month-end MAE/spend | OOD coverage |
+|---|---|---|---|---|---|---|---|---|
+| committed personas | 0 | model | 0.0432 | 0.1339 | 0.805 | 0.2457 | 0.1848 | 0.7468 |
+| committed personas | 0 | model_robust_centre | 0.0322 | 0.08 | 0.9417 | 0.2287 | 0.1445 | 0.8846 |
+| committed personas | 1 | model | 0.0431 | 0.1317 | 0.8121 | 0.2477 | 0.1768 | 0.751 |
+| committed personas | 1 | model_robust_centre | 0.032 | 0.0819 | 0.9306 | 0.2313 | 0.1454 | 0.8486 |
+| committed personas | 2 | model | 0.0421 | 0.1316 | 0.8123 | 0.2412 | 0.1789 | 0.7471 |
+| committed personas | 2 | model_robust_centre | 0.0322 | 0.0821 | 0.9342 | 0.2241 | 0.1414 | 0.8667 |
+| committed personas | 3 | model | 0.0428 | 0.1321 | 0.8337 | 0.2434 | 0.1727 | 0.7435 |
+| committed personas | 3 | model_robust_centre | 0.0315 | 0.0803 | 0.9377 | 0.2281 | 0.1458 | 0.8594 |
+| committed personas | 4 | model | 0.0416 | 0.1302 | 0.8157 | 0.2475 | 0.1834 | 0.7684 |
+| committed personas | 4 | model_robust_centre | 0.0317 | 0.0794 | 0.9196 | 0.2287 | 0.1442 | 0.8774 |
+| fresh personas | 0 | model | 0.0419 | 0.1616 | 0.6344 | 1.6408 | 0.1882 | 0.6915 |
+| fresh personas | 0 | model_robust_centre | 0.0351 | 0.1078 | 0.7635 | 1.7172 | 0.1207 | 0.8518 |
+
+| Check | Generator | MAE gain (>= 0.01) | MAPE worsening (<= 0.002 orig / 0.01 OOD) | Coverage-gap increase (<= 0.02) | Pass |
+|---|---|---|---|---|---|
+| committed personas, seed 0 | original | 0.0539 | -0.011 | 0.1367 | no |
+| committed personas, seed 0 | ood | 0.0403 | -0.017 | 0.0314 | no |
+| fresh personas, seed 0 | original | 0.0538 | -0.0068 | -0.1291 | yes |
+| fresh personas, seed 0 | ood | 0.0675 | 0.0764 | -0.0567 | no |
+
+Seed noise (spread of the committed model's month-end MAE/spend over MC seeds 0-4): original 0.0037, OOD 0.0121. MAE gain of f across seeds 0-4: original 0.0495-0.0539, OOD 0.0269-0.0403; gain exceeds noise: yes.
+
+Decision: NOT ADOPTED.

@@ -137,4 +137,4 @@ def test_readme_tables_in_sync_with_results():
 
 
 # Recompute: python -m eval.pin_original
-ORIGINAL_SECTIONS_SHA256 = "0f5e550668557b1076992add540567471b56131b9fd0f1124a765724fd2c2161"
+ORIGINAL_SECTIONS_SHA256 = "334acbcabe2ae968e2b6c979ed469ce8e36fddc108942a6dd7707a7118dc009f"

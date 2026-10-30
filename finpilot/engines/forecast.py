@@ -16,6 +16,7 @@ class Model:
     daily: np.ndarray       # days x cats, positive discretionary spend
     weekdays: np.ndarray    # weekday of each row in daily
     last_date: pd.Timestamp
+    inflow: np.ndarray | None = None  # days, non-recurring money in (freelance invoices, refunds), bootstrapped with spend
 
 
 def current_balance(df, opening):
@@ -44,7 +45,10 @@ def fit(df, window_days=90, robust_pool=False) -> Model:
         daily = mat.to_numpy()
     else:
         daily = np.zeros((len(idx), 0))
-    return Model(rec, cats, daily, np.asarray(idx.weekday), end)
+    inc = df[(~df["merchant"].isin(rec_m)) & (df["amount"] > 0) & (df["date"] >= idx[0])]
+    inflow = (inc.assign(d=inc["date"].dt.normalize()).groupby("d")["amount"].sum()
+              .reindex(idx).fillna(0.0).to_numpy()) if len(inc) else None
+    return Model(rec, cats, daily, np.asarray(idx.weekday), end, inflow)
 
 
 def recurring_flows(model, dates):
@@ -124,12 +128,14 @@ def monte_carlo(model, balance, horizon=60, n=1000, seed=0, extra_flows=(), cuts
         rows[:, j] = rng.choice(by_wd[d.weekday()], size=n)
     if spend_scale != 1.0:
         scale = scale * spend_scale
-    disc = (model.daily[rows] * scale).sum(axis=2) if model.cats else np.zeros((n, horizon))
-    paths = balance + np.cumsum(fixed[None, :] - disc, axis=1)
+    drawn = model.daily[rows] if model.cats else None
+    disc = (drawn * scale).sum(axis=2) if model.cats else np.zeros((n, horizon))
+    infl = model.inflow[rows] if model.inflow is not None else 0.0
+    paths = balance + np.cumsum(fixed[None, :] + infl - disc, axis=1)
     by_cat = cum = None
     if detail:
         if model.cats:
-            per_day = model.daily[rows] * scale          # n x horizon x cats
+            per_day = drawn * scale                      # n x horizon x cats
             cum = np.cumsum(per_day, axis=1)
             by_cat = cum[:, -1, :]
         else:

@@ -8,7 +8,7 @@ import re
 import pandas as pd
 
 from ..engines import weather as W
-from .common import grounded_or, inr, narrate, pct_text, pct_values, risk_claim_consistent, risk_level
+from .common import grounded_or, inr, narrate, pct_text, plural, pct_values, risk_claim_consistent, risk_level
 
 SYSTEM = ("You are a financial meteorologist. Using only the numbers in the given weather report, write "
           "three short plain sentences. Return JSON {\"headline_text\": str, \"autopsy_text\": str, "
@@ -129,7 +129,10 @@ def _text_dates(rep):
 
 
 def _md(iso):
-    t = pd.Timestamp(iso)
+    try:
+        t = pd.Timestamp(iso)
+    except (ValueError, TypeError):
+        return str(iso)
     return f"{t.strftime('%b')} {t.day}"
 
 
@@ -217,10 +220,11 @@ def fallback_texts(rep):
                 f"in the next {rep['horizon']} days.")
     else:
         head = (f"{pct_text(h['p_any_breach'])} of simulated futures dip below your {inr(rep['buffer'])} safety "
-                f"buffer within {rep['horizon']} days. Worst day {h['worst_day']} ({worst}, "
-                f"{pct_text(h['worst_p'])} chance)")
-        head += (f"; {h['n_storm_days']} storm day(s) in {len(rep['storms'])} storm(s)." if rep["storms"]
-                 else "; no storm days.")
+                f"buffer within {rep['horizon']} days. The riskiest day is {_md(h['worst_day'])}, with a "
+                f"{pct_text(h['worst_p'])} chance ({worst}).")
+        n_s, n_w = h["n_storm_days"], len(rep["storms"])
+        head += (f" Storm level is reached on {plural(n_s, 'day')}, in {plural(n_w, 'separate stretch', 'separate stretches')}."
+                 if rep["storms"] else " No day reaches storm level.")
     aut = autopsy_text(rep)
     if rep["umbrellas"]:
         u = rep["umbrellas"][0]
@@ -253,7 +257,7 @@ def run(model, balance, params, llm=None):
                                    if not str(b["merchant"]).startswith("planned: salary")]
     rep["paydays"] = paydays(model, horizon, skip=[d for d, _, _ in flows] if scenario == "salary_skip" else ())
     if scenario == "salary_skip":
-        rep["scenario_note"] = (f"{len(flows)} pay date(s) removed inside the horizon" if flows else
+        rep["scenario_note"] = (f"{plural(len(flows), 'pay date')} removed inside the horizon" if flows else
                                 "no recurring income found, so there is no salary to skip")
     elif scenario != "none" and not flows:
         rep["scenario_note"] = "scenario produced no flow"

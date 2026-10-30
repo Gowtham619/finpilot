@@ -36,24 +36,14 @@ def _sync():
     return os.getenv("FINPILOT_SYNC") == "1"
 
 
+def parse_statement(raw: bytes):
+    """Read a CSV, PDF, scan or screenshot of a statement into a ParseResult (PII-masked rows, inferred opening balance, notes)."""
+    from .ingest import ingest
+    return ingest(raw, max_rows=MAX_ROWS)
+
+
 def parse_csv(raw: bytes) -> pd.DataFrame:
-    try:
-        df = pd.read_csv(io.BytesIO(raw))
-    except Exception as e:
-        raise ValueError(f"could not read CSV: {e}")
-    df.columns = [c.strip().lower() for c in df.columns]
-    missing = [c for c in ("date", "description", "amount") if c not in df.columns]
-    if missing:
-        raise ValueError(f"CSV must have columns date, description, amount (missing: {', '.join(missing)})")
-    if len(df) > MAX_ROWS:
-        raise ValueError(f"CSV has too many rows (max {MAX_ROWS})")
-    df = df[["date", "description", "amount"]].copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
-    df = df.dropna(subset=["date", "amount"])
-    if len(df) < 5:
-        raise ValueError("need at least 5 valid rows")
-    return df.sort_values("date", kind="stable").reset_index(drop=True)
+    return parse_statement(raw).df
 
 
 def _persist(profile):
@@ -319,3 +309,49 @@ def state(profile):
     agg = monthly_aggregates(df).round(0)
     out["monthly"] = {"months": list(agg.index), "series": {c: agg[c].tolist() for c in agg.columns}}
     return _clean(out)
+
+
+# ---- two-step import: preview (parse + mask, nothing saved) then confirm -------------------------------
+_PENDING: dict = {}
+_PENDING_MAX, _PENDING_TTL = 20, 1800
+_PENDING_LOCK = threading.Lock()
+
+
+def stash_import(parsed) -> str:
+    import time
+    now = time.time()
+    with _PENDING_LOCK:
+        for k in [k for k, (_, t) in _PENDING.items() if now - t > _PENDING_TTL]:
+            _PENDING.pop(k, None)
+        while len(_PENDING) >= _PENDING_MAX:
+            _PENDING.pop(next(iter(_PENDING)), None)
+        token = uuid.uuid4().hex
+        _PENDING[token] = (parsed, now)
+    return token
+
+
+def restore_import(token: str, parsed) -> None:
+    import time
+    with _PENDING_LOCK:
+        _PENDING[token] = (parsed, time.time())
+
+
+def take_import(token: str):
+    with _PENDING_LOCK:
+        item = _PENDING.pop(token, None)
+    if item is None:
+        raise ValueError("this import expired; upload the file again")
+    return item[0]
+
+
+def preview_summary(parsed) -> dict:
+    df = parsed.df
+    out_ = float(-df.loc[df["amount"] < 0, "amount"].sum())
+    in_ = float(df.loc[df["amount"] > 0, "amount"].sum())
+    sample = [{"date": str(r.date.date()), "description": r.description, "amount": float(r.amount)}
+              for r in df.head(12).itertuples()]
+    return {"rows": int(len(df)), "from": str(df["date"].min().date()), "to": str(df["date"].max().date()),
+            "money_in": round(in_, 2), "money_out": round(out_, 2), "skipped": parsed.dropped,
+            "opening_balance": parsed.opening_balance, "source": parsed.source, "pii": parsed.pii,
+            "notes": parsed.notes, "sample": sample,
+            "days": int((df["date"].max() - df["date"].min()).days) + 1}

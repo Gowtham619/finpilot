@@ -15,3 +15,4 @@ __pycache__/
 node_modules/
 eval/cache/
 # NOTE: eval/ itself must stay in the image: finpilot imports eval.generate.
+testdata/statements/

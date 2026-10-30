@@ -149,7 +149,11 @@ _SUFFIX = {"k": 1e3, "lakh": 1e5, "lakhs": 1e5, "lac": 1e5, "lacs": 1e5,
            "crore": 1e7, "crores": 1e7, "cr": 1e7}
 _TOKEN = re.compile(r"(?P<cur>₹|\$|(?<![A-Za-z])(?:Rs\.?|INR|USD))?\s*(?P<num>\d[\d,]*\.?\d*)\s*"
                     r"(?P<suf>(?:lakhs?|lacs?|crores?|cr|k)\b)?(?P<pct>\s*(?:%|(?:percentage\s+points?|per\s*cent|percent|pct)\b))?", re.I)
-_DATE = re.compile(r"(?<!\d)(19|20)\d{2}-\d{2}(-\d{2})?(?!\d)")
+_MON = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]{0,6}\.?"
+_DATE = re.compile(r"(?<!\d)(19|20)\d{2}-\d{2}(-\d{2})?(?!\d)"
+                   rf"|(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\s+{_MON}(?:\s+(?:19|20)\d{{2}})?(?!\d)"   # 22 Jun 2026
+                   rf"|\b{_MON}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+(?:19|20)\d{{2}})?(?!\d)"      # Jun 22, Nov 30
+                   rf"|\b{_MON}\s+(?:19|20)\d{{2}}(?!\d)")                                          # Mar 2026
 
 
 def text_numbers(text):

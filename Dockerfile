@@ -3,8 +3,9 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+ARG WITH_OCR=1   # 0 skips OCR (about 200 MB smaller); CSV and text PDFs still work
+COPY requirements.txt requirements-ocr.txt ./
+RUN pip install -r requirements.txt && if [ "$WITH_OCR" = "1" ]; then pip install -r requirements-ocr.txt; fi
 
 # eval/ is required at runtime (the app imports eval.generate for the demo personas)
 COPY . .

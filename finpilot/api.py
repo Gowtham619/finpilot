@@ -62,22 +62,72 @@ def create_app():
         profile, run_id = service.load_persona(persona)
         return {"profile": profile, "run_id": run_id}
 
-    @app.post("/api/upload")
-    async def upload(profile: str = Form(...), opening_balance: float = Form(0.0), file: UploadFile = File(...)):
-        valid_profile(profile)
-        if not math.isfinite(opening_balance):
-            raise HTTPException(400, "opening_balance must be a finite number")
+    async def _read_upload(file):
         chunks, size = [], 0
         while chunk := await file.read(64 * 1024):
             size += len(chunk)
             if size > MAX_UPLOAD:
                 raise HTTPException(413, "file too large (max 5 MB)")
             chunks.append(chunk)
+        return b"".join(chunks)
+
+    @app.post("/api/upload")
+    async def upload(profile: str = Form(...), opening_balance: str = Form(""), file: UploadFile = File(...)):
+        valid_profile(profile)
+        opening = None
+        if opening_balance.strip():
+            try:
+                opening = float(opening_balance)
+            except ValueError:
+                raise HTTPException(400, "opening_balance must be a number")
+            if not math.isfinite(opening):
+                raise HTTPException(400, "opening_balance must be a finite number")
+        raw = await _read_upload(file)
         try:
-            df = service.parse_csv(b"".join(chunks))
+            parsed = await asyncio.to_thread(service.parse_statement, raw)
         except ValueError as e:
             raise HTTPException(400, str(e))
-        return {"profile": profile, "run_id": service.start_pipeline(profile, df, opening_balance)}
+        source = "user"
+        if opening is None:
+            opening, source = (parsed.opening_balance, "statement") if parsed.opening_balance is not None else (0.0, "default")
+        notes = list(parsed.notes)
+        if source == "default":
+            notes.append("no opening balance given or found in the file; assumed 0")
+        return {"profile": profile, "run_id": service.start_pipeline(profile, parsed.df, opening),
+                "opening_balance": opening, "opening_balance_source": source, "notes": notes}
+
+    @app.post("/api/import/preview")
+    async def import_preview(file: UploadFile = File(...)):
+        raw = await _read_upload(file)
+        try:
+            parsed = await asyncio.to_thread(service.parse_statement, raw)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"token": service.stash_import(parsed), **service.preview_summary(parsed)}
+
+    @app.post("/api/import/confirm")
+    async def import_confirm(body: dict):
+        profile = valid_profile(str(body.get("profile", "")))
+        raw_ob = body.get("opening_balance")
+        try:
+            opening = float(raw_ob) if raw_ob not in (None, "") else None
+        except (TypeError, ValueError):
+            raise HTTPException(400, "opening_balance must be a number")
+        if opening is not None and not math.isfinite(opening):
+            raise HTTPException(400, "opening_balance must be a finite number")
+        token = str(body.get("token", ""))
+        try:
+            parsed = service.take_import(token)
+        except ValueError as e:
+            raise HTTPException(410, str(e))
+        if opening is None:
+            opening = parsed.opening_balance if parsed.opening_balance is not None else 0.0
+        try:
+            run_id = service.start_pipeline(profile, parsed.df, opening)
+        except Exception:
+            service.restore_import(token, parsed)  # let the user retry without re-uploading
+            raise
+        return {"profile": profile, "run_id": run_id, "opening_balance": opening}
 
     @app.get("/api/state/{profile}")
     def state(profile: str = Depends(valid_profile)):

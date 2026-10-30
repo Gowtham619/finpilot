@@ -242,16 +242,3 @@ Scheduler jobs (server local time): weekly digest Monday 09:00 (from stored reco
 ## Test status
 `.venv/bin/python -m pytest -q`: **618 passed** (about 90 s), fully offline: no network and no LLM key. The PDF and OCR tests need `requirements-dev.txt` (they are skipped without `reportlab` / `rapidocr`). Run locally on Python 3.14 (pandas 3.0.6); the Dockerfile targets 3.12 and the CI workflow 3.11.
 
-## Before you submit (owner checklist)
-- [ ] Put a Mesh key in `.env`, run `make eval` then `make eval-sync`, and commit `eval/results.*` and the README (fills hybrid, ablation, grounding).
-- [ ] Push to a public repo, add secrets `MESH_API_KEY` and `SUBMISSION_TOKEN`, and confirm the Actions checks go green.
-- [ ] Deploy via `render.yaml` (`MESH_API_KEY` as a secret), check **Load persona** and **Guided demo** from a phone, then add the URL. Deployed demo URL: TODO(owner): add URL after deploying
-- [ ] Record the 60-second demo: press **Guided demo** and screen-record it (`docs/DEMO.md`).
-- [ ] Optional: run `python -m eval.real_data path.csv eval/real_map.json` on a public CSV and add a clearly labelled table.
-
-## Design decisions and what I would do next
-- **Engines compute, LLMs narrate.** Every number comes from a tested engine; the LLM labels, phrases and drafts, and every agent works without it.
-- **Common random numbers.** Duels, umbrellas, the lifestyle slider and purchases run on identical random futures, so differences reflect the decision, not sampling noise.
-- **Pre-registered adoption rules and negative results.** Rules were fixed before scoring candidates; failed ones are reported, not hidden.
-- **Verifier before display**, with honest limits (a consistency check, not an independent one).
-- **A real deployment would need:** authentication and per-user isolation; a persistent database; real bank data (aggregator, consent, messy descriptions); independent evaluation data and labels instead of same-author generators; a categorizer that survives messy descriptions (0.33 OOD accuracy today); and a forecast that handles one-off events without losing tail risk.

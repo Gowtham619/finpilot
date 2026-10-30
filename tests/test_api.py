@@ -387,3 +387,9 @@ def test_correction_normalizes_merchant_and_rejects_empty(client):
         assert client.post("/api/correct/priya", json={"merchant": m, "category": "dining"}).status_code == 400
     with db.session() as sess:
         assert "" not in db.corrections(sess, "priya")
+
+
+def test_rerun_response_names_the_profile_so_the_ui_keeps_it(client):
+    client.post("/api/load/priya")
+    r = client.post("/api/rerun/priya")
+    assert r.status_code == 200 and r.json()["profile"] == "priya" and r.json()["run_id"]

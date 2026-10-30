@@ -229,7 +229,7 @@ def create_app():
             df, opening = db.load_df(s, profile)
         if df is None:
             raise HTTPException(404, "no data")
-        return {"run_id": service.start_pipeline(profile, df[["date", "description", "amount"]], opening)}
+        return {"profile": profile, "run_id": service.start_pipeline(profile, df[["date", "description", "amount"]], opening)}
 
     @app.post("/api/correct/{profile}")
     def correct(body: dict, profile: str = Depends(valid_profile)):
@@ -247,7 +247,7 @@ def create_app():
                 raise HTTPException(404, "no data")
             db.add_correction(s, profile, merchant, body["category"])
         raw = df[["date", "description", "amount"]]
-        return {"run_id": service.start_pipeline(profile, raw, opening)}
+        return {"profile": profile, "run_id": service.start_pipeline(profile, raw, opening)}
 
     return app
 

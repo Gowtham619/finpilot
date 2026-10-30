@@ -44,14 +44,30 @@ Principle: **engines compute, LLMs narrate, the Verifier checks.** All arithmeti
 |---|---|---|---|
 | Categorizer | label transactions | normalizer + keyword rules, user corrections | labels merchants the rules miss |
 | Analyzer | anomalies, subscriptions, payday behaviour | `engines/analyze.py` | short overview |
-| Forecaster | balance bands, goals | `engines/forecast.py` (weekday profile, 1,000-path Monte Carlo) | explains |
+| Forecaster | balance bands, goals | `engines/forecast.py` (weekday profile, 1,000-path Monte Carlo; irregular income such as invoices and refunds is resampled with spending; the typical range leaves out flagged one-off charges while overdraft risk keeps them) | explains |
 | Meteorologist | weather map, scenarios | `engines/weather.py` | narrates report numbers (strictly grounded) |
 | Simulator | afford / duel | `engines/simulate.py` | narrates the verdict |
 | Advisor | actions from findings, forecast and storms | builds candidates | drafts text and claims |
 | Verifier | audit | `engines/verify.py` | optional rewrite of corrected text |
 | Chat | Q&A | read-only query tools | picks a tool, phrases the answer |
 
-Also: CSV upload (`date, description, amount` + opening balance + profile name), three personas (priya, arjun, meera), a **Why?** panel per recommendation (finding ids, evidence, verifier note), goals, "Can I afford it?" (optionally financed; suggests another date only if really better), Decision duel (winner by overdraft risk, then median end balance, then median lowest balance; the computed result line is always shown, and a narration that names a different winner is rejected), and a scheduler (weekly digest, daily pace check; email only if SMTP is configured; every digest is stored and shown in the Digest card).
+Also: statement import (see below),  three personas (priya, arjun, meera), a **Why?** panel per recommendation (finding ids, evidence, verifier note), goals, "Can I afford it?" (optionally financed; suggests another date only if really better), Decision duel (winner by overdraft risk, then median end balance, then median lowest balance; the computed result line is always shown, and a narration that names a different winner is rejected), and a scheduler (weekly digest, daily pace check; email only if SMTP is configured; every digest is stored and shown in the Digest card).
+
+## Importing a bank statement
+
+Press **Import statement** (header). The app reads the file, masks personal data, and shows a **preview** (row count, dates, money in and out, what was masked, the opening balance it found, warnings, and the first rows). Nothing is saved until you press **Looks right: analyse**.
+
+| File | How it is read |
+|---|---|
+| CSV / TSV / pasted text | Header row found automatically (aliases such as `Txn Date`, `Narration`, `Withdrawal Amt.`); separate debit/credit columns, a single signed amount, `Dr`/`Cr` suffixes, `₹`/`Rs`, lakh commas, day-first or ISO dates, preamble and footer lines, newest-first order |
+| Text PDF | Words are read with their page positions and each amount is assigned to its column (Withdrawal / Deposit / Balance), so debit versus credit comes from the layout, not a guess; repeated headers, footers and wrapped narrations are handled |
+| Scanned PDF, photo, screenshot | The same column logic after local OCR (RapidOCR, deskewed); missing amounts are rebuilt from the running balance and reported |
+
+- **Opening balance**: leave it blank and it is worked out from the statement's balance column; otherwise it is the value you type. With neither, 0 is assumed and the preview says so.
+- **Privacy**: reading and OCR run on the server's own machine; no statement text goes to an LLM or any other service. Account and card numbers (last 4 kept), IFSC, PAN, Aadhaar, GSTIN, phone numbers, emails, UPI IDs and person names in transfer narrations are masked **before** anything is stored; statement headers (name, address, account details) are discarded. Masking is rule-based and best effort: it will miss some names and will occasionally mask an ordinary word. Previews wait in server memory for 30 minutes.
+- **Checks shown to you**: how many rows reconcile with the running balance, how many rows were skipped, and any guess (for example a debit/credit inferred from the description).
+- **OCR is optional**: `requirements-ocr.txt` (about 200 MB). Without it CSV and text PDFs work and scans return a clear error. Docker builds include it; use `--build-arg WITH_OCR=0` to leave it out.
+- **Tested on** synthetic exports shaped like SBI, ICICI, Axis, Kotak, credit-card and wallet files, multi-page PDFs and degraded scans (blur, JPEG, tilt, noise); see `tests/test_bank_layouts.py` and `tests/test_pdf_layouts.py`. **Not tested on real bank exports or real phone photos**; a layout that is not recognised is reported, not guessed.
 
 ## Trust model
 
@@ -152,8 +168,8 @@ Personas kavya, rohan, isha from a second generator by the same author: a robust
 
 | Forecast (3 personas x 3 origins = 9 months) | Balance MAPE | Month-end MAE / monthly spend | Pinball / monthly spend | p10-p90 coverage (nominal 0.80) |
 |---|---|---|---|---|
-| model | 0.2457 (0.1954–0.328) | 0.1848 (0.0931–0.2978) | 0.0565 (0.0468–0.0615) | 0.7468 (0.6086–0.8491) |
-| model_robust_centre | 0.2287 (0.2005–0.2821) | 0.1445 (0.0931–0.2232) | 0.051 (0.0441–0.0599) | 0.8846 (0.8484–0.9351) |
+| model | 0.2403 (0.1941–0.3151) | 0.1507 (0.0559–0.26) | 0.0589 (0.0516–0.0646) | 0.9131 (0.848–0.9563) |
+| model_robust_centre | 0.236 (0.2139–0.2667) | 0.1405 (0.1072–0.2055) | 0.0579 (0.0526–0.0655) | 0.9097 (0.8699–0.9351) |
 | flat_balance | 0.9679 (0.743–1.1049) | 0.0885 (0.0392–0.1443) | 0.2432 (0.2378–0.2533) | - |
 | seasonal_naive | 0.5423 (0.4272–0.7199) | 0.4533 (0.2882–0.5654) | 0.164 (0.1345–0.1909) | - |
 | trailing_mean | 0.8749 (0.6958–0.9688) | 0.3799 (0.2338–0.588) | 0.2283 (0.2242–0.2306) | - |
@@ -171,7 +187,7 @@ Personas kavya, rohan, isha from a second generator by the same author: a robust
 ### Reading it honestly
 **Strong.** On the original generator the detectors find every planted duplicate, large charge, subscription, unused subscription and payday pattern (precision and recall 1.0; the same generator planted them, so this shows the engines work, not that they generalize). The model's balance MAPE (0.0432) beats flat balance (0.2325) and trailing-30d-mean (0.4239). Calibration beats the base rate (skill 0.5182), though low bins are weak (0.0457 predicted vs 0.2222 observed; 0.7174 vs 1.0 in 0.6-0.8). Weather risk moves the right way with lifestyle and cuts (asserted in `tests/test_weather.py`).
 
-**Weak.** The forecast **ties** last-month replay (seasonal-naive) on balance MAPE (0.0432 vs 0.0440) and is **worse** on month-end error (0.1339 vs 0.1024). On the second generator it beats flat balance on balance MAPE (0.2457 vs 0.9679) but **not** on month-end error (0.1848 vs 0.0885), and its p10-p90 coverage is 0.7468 against a nominal 0.80. Out of distribution the rules-only categorizer falls from 0.8578 to 0.3327 accuracy, large-charge precision to 0.1609 and unused-subscription recall to 0.3333. Pinball loss favours the model partly because baselines are point forecasts used as all three quantiles. With n = 9 months per generator, differences are indicative, not statistically tested.
+**Weak.** The forecast **ties** last-month replay (seasonal-naive) on balance MAPE (0.0432 vs 0.0440) and is **worse** on month-end error (0.1339 vs 0.1024). On the second generator it beats flat balance on balance MAPE (0.2403 vs 0.9679) but **not** on month-end error (0.1507 vs 0.0885), and its p10-p90 coverage is 0.9131 against a nominal 0.80 (too wide now that refunds are resampled; it was 0.7468 before irregular income was modelled). Out of distribution the rules-only categorizer falls from 0.8578 to 0.3327 accuracy, large-charge precision to 0.1609 and unused-subscription recall to 0.3333. Pinball loss favours the model partly because baselines are point forecasts used as all three quantiles. With n = 9 months per generator, differences are indicative, not statistically tested.
 
 **Forecast refinement: a negative result.** We tried three rounds (candidates a-d and a tuned window, then pre-registered e, then pre-registered f) and adopted nothing; the engine is unchanged. The adoption rule was fixed before scoring, knobs were tuned only on training slices, a fixed 60-day window that passed the numbers was declared ineligible (choosing it would be selecting on held-out results), and Monte Carlo seed noise was measured (up to about 0.004 original / 0.012 OOD on month-end error). Candidate e cut month-end error by 0.054 / 0.040 but collapsed OOD coverage to 0.58. Candidate f (robust centre, full-pool spread; shown above as `model_robust_centre`) over-covered (0.94 / 0.88); on **fresh seeds** of the same generators it passed on the original generator but failed on OOD balance MAPE (1.641 to 1.717). Forking-paths disclosure: three rounds against the same nine held-out months, and fresh seeds share the generators' author and design, so they are not independent data. Log: `eval/forecast_experiments.md` (`python -m eval.forecast_experiments`).
 
@@ -189,6 +205,8 @@ No numbers are claimed for these. `make eval` with `MESH_API_KEY` set writes the
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-ocr.txt   # optional: scanned PDFs and photos
+# for the tests: pip install -r requirements-dev.txt
 cp .env.example .env     # MESH_API_KEY is optional; without it the template paths run
 make run                 # http://127.0.0.1:8000 ; FINPILOT_AUTOSEED=1 preloads priya
 make test                # python -m pytest -q (offline)
@@ -197,7 +215,7 @@ make eval-sync           # regenerate the README tables from eval/results.md
 make eval-check          # fail if the README tables are out of sync
 ```
 
-The UI loads Chart.js from a CDN (jsDelivr), so charts need internet access.
+The UI loads Chart.js from a CDN (jsDelivr), so charts need internet access. That is the only external resource: fonts are the system's own, and no statement data is sent anywhere.
 
 **Docker** (`make docker-build`, `make docker-run`; python:3.12-slim, non-root, SQLite at `/data/finpilot.db`, health check, honours `PORT`). Tested on the build machine: the image built and ran `healthy` with `FINPILOT_AUTOSEED=1`; `GET /`, `GET /api/state/priya` (balance 98,464.97) and `GET /api/weather/priya?scenario=purchase` (p_any_breach 0.773) returned 200. **Not tested:** Render itself (`render.yaml` is written, not deployed), a live Mesh key inside the container, the scheduler beyond startup, and the GitHub Actions run. SQLite on free hosting is **ephemeral**: a restart loses uploads and corrections, and autoseed re-creates Priya.
 
@@ -214,6 +232,7 @@ The UI loads Chart.js from a CDN (jsDelivr), so charts need internet access.
 Scheduler jobs (server local time): weekly digest Monday 09:00 (from stored recommendations); pace check daily 18:00, deduplicated on `pace:{category}:{month}` (at most one per 24 h unless the overage grew by more than 25%).
 
 ## Security and privacy notes
+- Uploads and previews are not private to a visitor and sit in server memory (previews) or SQLite (saved profiles); masking limits are described under *Importing a bank statement*.
 - **No authentication anywhere**: profiles are not private to a visitor. Do not upload real financial data to a shared deployment.
 - `POST /api/digest/{profile}` is unauthenticated. The recipient is fixed to `DIGEST_TO`, but anyone who can reach the server can trigger a digest email; do not configure SMTP on a public deployment (or use a throwaway address).
 - Limits: uploads 5 MB / 50,000 rows; profile names `^[A-Za-z0-9_-]{1,40}$`; `financed_months` 0-60; simulation horizon 1-365 days (weather 7-120); lifestyle 0-2; goals need a 1-60 character name, a target in (0, 1e12] and a deadline between one year before and ten years after the data's last date. The weather endpoint rejects `opening`/`balance` overrides.
@@ -221,7 +240,7 @@ Scheduler jobs (server local time): weekly digest Monday 09:00 (from stored reco
 - The CI workflow `.github/workflows/agent-arena-2026-checks.yml` (required by the hackathon) downloads a script from the hackathon server and runs it with repository secrets available. Use a revocable Mesh key.
 
 ## Test status
-`.venv/bin/python -m pytest -q`: **560 passed** (about 105 s), fully offline: no network and no LLM key. Run locally on Python 3.14 (pandas 3.0.6); the Dockerfile targets 3.12 and the CI workflow 3.11.
+`.venv/bin/python -m pytest -q`: **618 passed** (about 90 s), fully offline: no network and no LLM key. The PDF and OCR tests need `requirements-dev.txt` (they are skipped without `reportlab` / `rapidocr`). Run locally on Python 3.14 (pandas 3.0.6); the Dockerfile targets 3.12 and the CI workflow 3.11.
 
 ## Before you submit (owner checklist)
 - [ ] Put a Mesh key in `.env`, run `make eval` then `make eval-sync`, and commit `eval/results.*` and the README (fills hybrid, ablation, grounding).

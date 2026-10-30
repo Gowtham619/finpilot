@@ -21,7 +21,13 @@ def run(df, opening, goals=(), llm=None, horizon=60):
     model = fit(df)
     bal = current_balance(df, opening)
     res = monte_carlo(model, bal, horizon)
-    s = res.summary()
+    s = res.summary()  # risk (overdraft chance, floor, first risk day) always uses every real charge
+    # The "typical" range and median leave out flagged one-off charges so a single large purchase does not keep
+    # pulling every future month down. Rolling-origin backtest: lower error, bias near 0, coverage near nominal
+    # (eval/forecast_experiments.md, post-hoc section).
+    typical = monte_carlo(fit(df, robust_pool=True), bal, horizon)
+    s.update(end_p10=round(typical.end_p10, 2), end_p50=round(typical.end_p50, 2), end_p90=round(typical.end_p90, 2))
+    res = typical
     bands = {"dates": [str(d.date()) for d in res.dates], "p10": [round(float(x), 2) for x in res.p10],
              "p50": [round(float(x), 2) for x in res.p50], "p90": [round(float(x), 2) for x in res.p90]}
     gs = []
@@ -38,9 +44,9 @@ def run(df, opening, goals=(), llm=None, horizon=60):
             gs.append({"name": g["name"], "target": g["target"], "deadline": str(g["deadline"]), **st})
         except (KeyError, ValueError, TypeError, AttributeError, OverflowError) as e:
             gs.append({"name": name if isinstance(g, dict) else "?", "error": f"invalid goal: {e}"})
-    fallback = (f"In {horizon} days your balance is projected at {fmt_bal(s['end_p50'])} "
-                f"(likely range {fmt_bal(s['end_p10'])} to {fmt_bal(s['end_p90'])}). "
-                f"Chance of going overdrawn: {pct_text(s['p_overdraft'])}.")
+    fallback = (f"In {horizon} days you will most likely have about {fmt_bal(s['end_p50'])}, "
+                f"typically between {fmt_bal(s['end_p10'])} and {fmt_bal(s['end_p90'])}. "
+                f"Chance of going overdrawn at some point: {pct_text(s['p_overdraft'])}.")
     out = narrate(llm, SYSTEM, {"summary": s, "horizon": horizon, "balance": bal}, None)
     text = out.get("narrative") if isinstance(out, dict) else None
     if not risk_claim_consistent(text, risk_level(s["p_overdraft"]), [s["p_overdraft"]]):

@@ -5,10 +5,9 @@ import uuid
 
 from ..engines.verify import recompute
 from ..llm import LLMUnavailable
+from .common import fmt_date, fmt_month as _month, inr
 
 
-def inr(x):
-    return f"₹{x:,.0f}"
 
 
 def _claim(kind, df, ctx=None, **kw):
@@ -112,23 +111,23 @@ HOLD_BACK = "Hold back on non-bill spending (groceries, dining, shopping) until 
 def template_text(rec):
     e, t = rec["evidence"], rec["trigger_type"]
     if t == "unused_subscription":
-        return (f"Cancel {e['merchant']}: it costs {inr(_cv(rec, 'monthly_cost', e['monthly_cost']))}/month "
-                f"({inr(_cv(rec, 'annual_cost', e['annual_cost']))}/year) and looks unused — {e['detail']}.")
+        return (f"Cancel {e['merchant']}: it costs {inr(_cv(rec, 'monthly_cost', e['monthly_cost']))} a month "
+                f"({inr(_cv(rec, 'annual_cost', e['annual_cost']))} a year) and looks unused ({e['detail']}).")
     if t == "category_spike":
         cat = e['category'].replace('_', ' ')
-        return (f"In {e['month']} {cat} spend was {inr(_cv(rec, 'month_total', e['value']))}, "
-                f"{inr(e['excess'])} over your usual {inr(e['baseline'])} "
-                f"({_cv(rec, 'pct_change', e['pct_change']):.0f}% above). "
-                f"Bringing it back to normal would have saved about {inr(e['excess'])} that month.")
+        return (f"You spent {inr(_cv(rec, 'month_total', e['value']))} on {cat} in {_month(e['month'])}, "
+                f"{inr(e['excess'])} more than your usual {inr(e['baseline'])} "
+                f"({_cv(rec, 'pct_change', e['pct_change']):.0f}% higher). "
+                f"Keeping it at your usual level would have saved about {inr(e['excess'])} that month.")
     if t == "duplicate_charge":
         return (f"{e['merchant']} charged {inr(_cv(rec, 'txn_amount', e['amount']))} twice within two days "
-                f"(second charge {e['date']}). Dispute it.")
+                f"(second charge on {fmt_date(e['date'])}). Ask the merchant or your bank to reverse one.")
     if t == "large_charge":
-        return (f"A {inr(_cv(rec, 'txn_amount', e['amount']))} charge at {e['merchant']} on {e['date']} "
-                f"is far above your normal spend. Confirm it is yours.")
+        return (f"A {inr(_cv(rec, 'txn_amount', e['amount']))} charge at {e['merchant']} on {fmt_date(e['date'])} "
+                f"is far above your normal spend. Check that it is yours.")
     if t == "behavior_trigger":
-        return (f"{e['share_pct']:.0f}% of your {e['category'].replace('_', ' ')} spending lands in the "
-                f"{e['window_days']} days after payday ({e['ratio']:.1f}x the normal rate). Delay those orders a few days.")
+        return (f"{e['share_pct']:.0f}% of your {e['category'].replace('_', ' ')} spending happens in the "
+                f"{e['window_days']} days after payday, {e['ratio']:.1f} times your normal rate. Try waiting a few days before ordering.")
     if t == "storm_warning":
         st = e["storm"]
         txt = (f"Storm warning: {st['start']} to {st['end']}, peak {_cv(rec, 'storm_peak', st['peak_p']*100):.0f}% "
@@ -140,12 +139,12 @@ def template_text(rec):
         return txt
     if t == "forecast_risk" and "buffer" in e:
         return (f"At the current pace there is a {e['p_overdraft']*100:.0f}% chance your balance goes negative "
-                f"within {e['horizon']} days, first around {e['risk_day']}. Across all {e['horizon']} days "
+                f"within {e['horizon']} days, first around {fmt_date(e['risk_day'])}. Across all {e['horizon']} days "
                 f"{_cv(rec, 'breach_probability', e['p_any_breach']*100):.0f}% of simulated futures dip below your "
                 f"safety buffer ({inr(e['buffer'])}). {HOLD_BACK}")
     if t == "forecast_risk":
         return (f"At the current pace there is a {e['p_overdraft']*100:.0f}% chance your balance goes negative "
-                f"within {e['horizon']} days, first around {e['risk_day']}. {HOLD_BACK}")
+                f"within {e['horizon']} days, first around {fmt_date(e['risk_day'])}. {HOLD_BACK}")
     if t == "goal_behind":
         return f"You have a {e['p_met']*100:.0f}% chance of meeting '{e['name']}' by its deadline. Increase contributions or move the date."
     return rec["action"]

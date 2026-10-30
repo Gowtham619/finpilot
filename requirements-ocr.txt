@@ -1,0 +1,4 @@
+# Optional: reads scanned PDFs and photos of statements (adds ~200 MB). Without it, CSV and text PDFs still work.
+rapidocr>=3.0
+onnxruntime>=1.18
+pillow>=10

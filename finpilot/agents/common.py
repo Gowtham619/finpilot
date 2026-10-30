@@ -2,12 +2,44 @@ import json
 import math
 import re
 
+import pandas as pd
+
 from ..engines.verify import ungrounded_numbers
 from ..llm import LLMUnavailable
 
 
 def inr(x):
-    return f"₹{x:,.0f}"
+    """Rupees with Indian digit grouping (₹1,08,729), matching what the UI shows."""
+    n = int(round(abs(x)))
+    s = str(n)
+    if len(s) > 3:
+        head, tail = s[:-3], s[-3:]
+        parts = []
+        while len(head) > 2:
+            parts.insert(0, head[-2:])
+            head = head[:-2]
+        s = ",".join(([head] if head else []) + parts + [tail])
+    return f"{'-' if x < 0 and n else ''}₹{s}"
+
+
+def plural(n, one, many=None):
+    return f"{n} {one if n == 1 else (many or one + 's')}"
+
+
+def fmt_month(m):
+    try:
+        return pd.Period(str(m), "M").strftime("%b %Y")
+    except (ValueError, TypeError):
+        return str(m)
+
+
+def fmt_date(iso):
+    """'2026-03-08' -> '8 Mar 2026' (a pre-formatted or unparseable value is returned unchanged)."""
+    try:
+        t = pd.Timestamp(iso)
+        return f"{t.day} {t.strftime('%b %Y')}"
+    except (ValueError, TypeError):
+        return str(iso)
 
 
 def narrate(llm, system, payload, fallback):

@@ -77,3 +77,27 @@ generators' author and design.
 Seed noise (spread of the committed model's month-end MAE/spend over MC seeds 0-4): original 0.0037, OOD 0.0121. MAE gain of f across seeds 0-4: original 0.0495-0.0539, OOD 0.0269-0.0403; gain exceeds noise: yes.
 
 Decision: NOT ADOPTED.
+
+## Post-hoc: rolling-origin check on six datasets (not pre-registered)
+
+Added after the decision above, to find where the forecast was weakest. Script: `python -m eval.rolling_origin`.
+Six datasets (the three eval personas and `testdata/good_01`, `good_02`, `good_03`), origins every 15 days, 30-day horizon,
+about 18 forecasts. err = |median end balance - actual| / monthly spend; bias < 0 means too pessimistic; cov = share of days
+inside p10-p90 (nominal 0.80). Small n, same author for all data: a diagnostic, not a validation.
+
+| Engine | mean err | mean bias | mean coverage | freelancer (good_03) err / coverage |
+|---|---|---|---|---|
+| before | 0.220 | -0.170 | 0.714 | 1.091 / 0.033 |
+| + irregular income modelled | 0.131 | -0.056 | 0.793 | 0.239 / 0.778 |
+| + typical range from the robust pool (shipped) | 0.102 | -0.006 | 0.794 | 0.201 / 0.778 |
+
+What changed in the shipped forecaster:
+1. **Irregular income.** Credits that are not recurring (freelance invoices, refunds) are now bootstrapped together with
+   spending. Before, a freelancer's income was treated as zero, so the forecast was off by about a month of spending.
+2. **Typical range.** The dashboard median and p10-p90 range leave out flagged one-off charges (`robust_pool`). The overdraft
+   chance, floor and first-risk-day still use every real charge, so risk is not softened.
+
+This is a different variant from "candidate f" above (that one kept the full-pool spread and over-covered at 0.94, so it
+stays not adopted). The shipped variant takes median and spread from the robust pool. It does not meet the pre-registered
+rule's evidence standard (post-hoc, six datasets), so treat the gain as promising, not proven. Not fixed: `good_02`
+(tight budget) is still over-confident (coverage 0.62).

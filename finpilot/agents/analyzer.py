@@ -1,5 +1,5 @@
 from ..engines.analyze import analyze_all
-from .common import grounded_or, inr, narrate
+from .common import fmt_date, fmt_month, grounded_or, inr, narrate, plural
 
 WEIGHT = {"duplicate_charge": 0, "large_charge": 1, "category_spike": 2, "unused_subscription": 3,
           "behavior_trigger": 4, "subscription": 5}
@@ -13,15 +13,15 @@ def finding_text(f):
     if t == "unused_subscription":
         return f"{f['merchant']} costs {inr(f['monthly_cost'])}/month and looks unused ({f['detail']})."
     if t == "category_spike":
-        return (f"{f['category']} spend hit {inr(f['value'])} in {f['month']}, "
-                f"{f['pct_change']:.0f}% above your typical {inr(f['baseline'])}.")
+        return (f"You spent {inr(f['value'])} on {f['category'].replace('_', ' ')} in {fmt_month(f['month'])}, "
+                f"{f['pct_change']:.0f}% more than your usual {inr(f['baseline'])}.")
     if t == "duplicate_charge":
-        return f"{inr(f['amount'])} was charged twice at {f['merchant']} within 48 hours (second charge {f['date']})."
+        return f"{inr(f['amount'])} was charged twice at {f['merchant']} within 48 hours (second charge on {fmt_date(f['date'])})."
     if t == "large_charge":
-        return f"{inr(f['amount'])} at {f['merchant']} on {f['date']} is far above your normal spend."
+        return f"{inr(f['amount'])} at {f['merchant']} on {fmt_date(f['date'])} is far above your normal spend."
     if t == "behavior_trigger":
-        return (f"{f['share_pct']:.0f}% of your {f['category']} spending lands in the {f['window_days']} days "
-                f"after payday ({f['ratio']:.1f}x the normal rate).")
+        return (f"{f['share_pct']:.0f}% of your {f['category'].replace('_', ' ')} spending happens in the "
+                f"{f['window_days']} days after payday, {f['ratio']:.1f} times your normal rate.")
     return f"{f['merchant']}: {inr(f['monthly_cost'])}/month."
 
 
@@ -30,7 +30,8 @@ def run(df, llm=None):
     for f in findings:
         f["summary"] = finding_text(f)
     findings.sort(key=lambda f: WEIGHT.get(f["type"], 9))
-    overview = f"{len(findings)} findings; most important: {findings[0]['summary']}" if findings else "No findings."
+    overview = (f"{plural(len(findings), 'thing')} worth a look. Most important: {findings[0]['summary']}"
+                if findings else "Nothing unusual found in this statement.")
     res = narrate(llm, SYSTEM, [{"id": f["id"], "summary": f["summary"]} for f in findings], None)
     if isinstance(res, dict):
         ids = {f["id"] for f in findings}

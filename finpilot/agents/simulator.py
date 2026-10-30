@@ -3,7 +3,7 @@ import re
 import pandas as pd
 
 from ..engines import simulate as S
-from .common import (fmt_bal, grounded_or, inr, narrate, pct_text, pct_values, risk_claim_consistent,
+from .common import (plural, fmt_bal, grounded_or, inr, narrate, pct_text, pct_values, risk_claim_consistent,
                      risk_level)
 
 SYSTEM = ("You answer 'can I afford this?'. Use only the numbers given, in two or three sentences. "
@@ -108,7 +108,7 @@ def afford(model, balance, req, llm=None):
     res = {"verdict": verdict, "sim": sim, "best_dates": best, "fix": fix, "narrative": narrative}
     n_ign = int(sim.get("ignored_flows") or 0)
     if n_ign > 0:  # deterministic, added after grounding so it cannot fail it
-        res["notice"] = f"{n_ign} installment(s) fall outside the {hz}-day window and are not simulated"
+        res["notice"] = f"{plural(n_ign, 'installment')} fall{'s' if n_ign == 1 else ''} outside the {hz}-day window and {'is' if n_ign == 1 else 'are'} not simulated"
         res["narrative"] = f"{narrative} ({res['notice']}.)"
     return res
 
@@ -160,6 +160,7 @@ def run_duel(model, balance, req, llm=None):
     res["narrative"] = grounded_or(text, duel_evidence(res), res["reason"], strict=True,
                                    ignore=(res["a"]["name"], res["b"]["name"]))
     if res.get("ignored_flows"):
-        res["notice"] = (f"{res['ignored_flows']} installment(s) fall outside the "
-                         f"{res['horizon']}-day window and are not simulated.")
+        n = res["ignored_flows"]
+        res["notice"] = (f"{plural(n, 'installment')} fall{'s' if n == 1 else ''} outside the "
+                         f"{res['horizon']}-day window and {'is' if n == 1 else 'are'} not simulated.")
     return res

@@ -262,7 +262,7 @@ def test_afford_financed_notice_and_unfinanced_none(client):
     long = client.post("/api/afford/priya", json={"amount": 150000, "financed_months": 24,
                                                    "date": str(start.date())}).json()["answer"]
     n = long["sim"]["ignored_flows"]
-    assert n == 12 and long["notice"] == f"{n} installment(s) fall outside the 365-day window and are not simulated"
+    assert n == 12 and long["notice"] == f"{n} installments fall outside the 365-day window and are not simulated"
     assert long["notice"] in long["narrative"]
     plain = client.post("/api/afford/priya", json={"amount": 5000}).json()["answer"]
     assert not plain.get("notice")
